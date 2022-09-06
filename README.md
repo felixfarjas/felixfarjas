@@ -1,0 +1,5 @@
+- 👋 Hi, I’m @felixfarjas
+- 👀 I’m interested in graphic design, typography, motion design, 3D animation...
+- 🌱 I’m currently learning a lot of things
+- 💞️ I’m looking to collaborate on a lot of things
+- 📫 You can reach me at felixfarjas@gmail.com — Instagram @felixfarjas
