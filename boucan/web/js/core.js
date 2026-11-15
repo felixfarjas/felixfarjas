@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '1.2';
+  B.VERSION = '1.3';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -24,6 +24,26 @@
   B.FADES = [0, 0.1, 0.5, 2];
   // effets DJ des cases FX (appliqués à tout ce qui joue)
   B.PAD_FX = ['brake', 'reverb', 'echo', 'highcut', 'lowcut', 'gate', 'cut'];
+  // Réglages de chaque effet de case (curseurs 0..1) et leurs valeurs de départ.
+  B.PAD_FX_PAR = {
+    brake: ['brakeTime'], reverb: ['amount'], echo: ['echoTime', 'repeats'], highcut: ['amount', 'sweep'],
+    lowcut: ['amount', 'sweep'], gate: ['rate', 'depth'], cut: ['fade']
+  };
+  B.PAD_FX_DEF = { brake: [0.55], reverb: [1], echo: [0.6, 0.8], highcut: [1, 0.26], lowcut: [1, 0.26], gate: [0.54, 1], cut: [0] };
+  B.TARGETS = ['boucan', 'phone', 'all'];
+  // Valeurs réelles d'une case FX, d'après ses curseurs.
+  B.padFxVal = function (pad) {
+    var d = B.PAD_FX_DEF[pad.fx] || [0, 0], f = pad.fx;
+    var p1 = typeof pad.p1 === 'number' ? pad.p1 : d[0], p2 = typeof pad.p2 === 'number' ? pad.p2 : (d[1] || 0);
+    var v = { type: f, amt: 1 };
+    if (f === 'brake') v.time = 0.2 * Math.pow(15, p1);
+    else if (f === 'reverb') v.amt = 0.3 + 0.7 * p1;
+    else if (f === 'echo') { v.time = 0.08 * Math.pow(10, p1); v.fb = 0.2 + 0.7 * p2; }
+    else if (f === 'highcut' || f === 'lowcut') { v.amt = 0.3 + 0.7 * p1; v.sweep = 0.02 + 1.5 * p2 * p2; }
+    else if (f === 'gate') { v.hz = 2 * Math.pow(10, p1); v.amt = 0.3 + 0.7 * p2; }
+    else if (f === 'cut') v.sweep = 0.004 + 0.5 * p1 * p1;
+    return v;
+  };
   B.cfg = null;
 
   var uidN = 0;
@@ -251,7 +271,7 @@
 
     var revSend = A.revSend = gain(0), conv = ctx.createConvolver();
     conv.buffer = impulse(ctx, 3.2);
-    var eSend = A.eSend = gain(0), delay = ctx.createDelay(1), eLp = filter('lowpass', 3500), fb = A.fb = gain(0.35);
+    var eSend = A.eSend = gain(0), delay = A.delay = ctx.createDelay(1), eLp = filter('lowpass', 3500), fb = A.fb = gain(0.35);
     delay.delayTime.value = 0.32;
     var fl = ctx.createDelay(0.05), flWet = A.flWet = gain(0), flFb = A.flFb = gain(0.3);
     fl.delayTime.value = 0.004;
@@ -272,7 +292,7 @@
     try {
       var lfo = ctx.createOscillator(), lfoG = gain(0.0025);
       lfo.frequency.value = 0.3; lfo.connect(lfoG); lfoG.connect(fl.delayTime); lfo.start(0);
-      var chop = ctx.createOscillator();
+      var chop = A.chop = ctx.createOscillator();
       chop.type = 'square'; chop.frequency.value = 7;
       chop.connect(A.tremDepth); A.tremDepth.connect(trem.gain); chop.start(0);
     } catch (e) {}
@@ -286,37 +306,65 @@
   };
 
   // Deux sources d'effet se cumulent : le curseur (un effet, dosage 0..1) et
-  // les cases FX tenues ou enclenchées (à fond). À fond, l'effet est radical,
-  // comme sur une table de DJ.
+  // les cases FX tenues ou enclenchées (réglées par leurs curseurs). À fond,
+  // l'effet est radical, comme sur une table de DJ.
   A.fx = { type: 'reverb', amt: 0 };
-  A.fxPads = {}; // id de case -> effet
+  A.fxPads = {}; // id de case -> valeurs de l'effet (B.padFxVal)
+  // Cible des effets : 'boucan' (les sons de l'app), 'phone' (le son des autres
+  // applis, traité par le natif Android) ou 'all'. A.nat décrit ce que le natif
+  // sait faire : mode 'session' (une appli précise), 'global' (toute la sortie
+  // du téléphone, Boucan compris), 'off' ou 'fail'.
+  A.target = 'boucan';
+  A.nat = { mode: 'off' };
 
-  function applyFx(tc) {
-    var t = A.ctx.currentTime, amt = {}, id;
+  function natOn() { return A.target !== 'boucan' && (A.nat.mode === 'session' || A.nat.mode === 'global'); }
+
+  // tc : temps de réponse général ; ftc : celui des filtres et du cut.
+  function applyFx(tc, ftc) {
+    var t = A.ctx.currentTime, amt = {}, P = {}, id;
+    if (ftc === undefined) ftc = tc;
     amt[A.fx.type] = A.fx.amt;
-    for (id in A.fxPads) amt[A.fxPads[id]] = 1;
+    for (id in A.fxPads) {
+      var f = A.fxPads[id];
+      amt[f.type] = Math.max(amt[f.type] || 0, f.amt);
+      P[f.type] = f;
+    }
     function on(k) { return amt[k] || 0; }
-    function set(p, v) { p.setTargetAtTime(v, t, tc); }
+    function set(p, v, c) { p.setTargetAtTime(v, t, c || tc); }
     var rev = on('reverb'), ech = on('echo'), hc = on('highcut'), lc = on('lowcut');
-    var meg = on('mega'), dis = on('disto'), fla = on('flanger'), gat = on('gate');
+    var meg = on('mega'), dis = on('disto'), fla = on('flanger'), gat = on('gate'), cut = on('cut') ? 1 : 0;
+    var hz = P.gate ? P.gate.hz : 7;
+
+    if (natOn()) {
+      try {
+        window.BoucanNative.phoneFx(hc, lc, rev, gat > 0 ? hz : 0, gat, !!cut, P.brake ? Math.round(P.brake.time * 1000) : 0, Math.round(ftc * 1000));
+      } catch (e) {}
+      if (A.target === 'phone') rev = ech = hc = lc = meg = dis = fla = gat = cut = 0;
+      // en mode global le natif traite déjà toute la sortie : pas de double dose
+      else if (A.nat.mode === 'global') rev = hc = lc = gat = cut = 0;
+    }
+
     A.fxEcho = ech;
+    A.fxFb = P.echo ? P.echo.fb : 0.35 + 0.5 * ech;
     // reverb : le son direct s'efface et s'assourdit, il ne reste presque que la queue
     set(A.revSend.gain, 3.2 * Math.pow(rev, 0.8));
     set(A.dry.gain, Math.max(0, 1 - 0.88 * rev - 0.5 * ech));
     set(A.eSend.gain, 1.2 * ech);
-    if (!A.killed) set(A.fb.gain, 0.35 + 0.5 * ech);
-    set(A.lp.frequency, 20000 * Math.pow(0.006, hc) * Math.pow(0.18, rev));
-    set(A.lp.Q, 0.7 + 7 * hc);
-    set(A.hp.frequency, 20 * Math.pow(400, lc));
-    set(A.hp.Q, 0.7 + 7 * lc);
+    set(A.delay.delayTime, P.echo ? P.echo.time : 0.32, 0.05);
+    if (!A.killed) set(A.fb.gain, A.fxFb);
+    set(A.lp.frequency, 20000 * Math.pow(0.006, hc) * Math.pow(0.18, rev), ftc);
+    set(A.lp.Q, 0.7 + 7 * hc, ftc);
+    set(A.hp.frequency, 20 * Math.pow(400, lc), ftc);
+    set(A.hp.Q, 0.7 + 7 * lc, ftc);
     set(A.mega.gain, 1.3 * meg);
     set(A.disto.gain, dis);
     set(A.clean.gain, Math.max(0, 1 - meg - dis));
     set(A.flWet.gain, fla);
     set(A.flFb.gain, 0.3 + 0.6 * fla);
+    if (A.chop) set(A.chop.frequency, hz, 0.01);
     set(A.trem.gain, 1 - gat / 2);
     set(A.tremDepth.gain, gat / 2);
-    A.cutG.gain.setTargetAtTime(on('cut') ? 0 : 1, t, 0.004);
+    A.cutG.gain.setTargetAtTime(cut ? 0 : 1, t, P.cut ? P.cut.sweep : Math.min(ftc, 0.004));
   }
 
   A.setFx = function (type, a) {
@@ -324,8 +372,21 @@
     applyFx(0.03);
   };
 
+  // Change la cible des effets ; le natif (Android) prépare ou libère les siens.
+  A.setTarget = function (target, global) {
+    var N = window.BoucanNative, nat = { mode: 'off' };
+    if (A.braked) brake(false);
+    if (N && N.phoneFxSetup) {
+      try { nat = JSON.parse(N.phoneFxSetup(target !== 'boucan', !!global)); } catch (e) { nat = { mode: 'fail', err: String(e) }; }
+    } else nat = { mode: 'none' };
+    A.target = target;
+    A.nat = nat;
+    if (A.ctx) applyFx(0.03);
+    return nat;
+  };
+
   // Vinyl stop : toutes les voix ralentissent jusqu'à l'arrêt, puis repartent.
-  function brake(on) {
+  function brake(on, time) {
     var t = A.ctx.currentTime, id;
     A.braked = on;
     for (id in A.voices) {
@@ -333,21 +394,23 @@
       try {
         r.cancelScheduledValues(t);
         r.setValueAtTime(r.value, t);
-        r.linearRampToValueAtTime(on ? 0.001 : 1, t + (on ? 0.9 : 0.35));
+        r.linearRampToValueAtTime(on ? 0.001 : 1, t + (on ? time || 0.9 : 0.35));
       } catch (e) {}
     }
   }
 
   // Case FX : enclenche ou relâche un effet DJ sur tout ce qui joue.
-  A.padFx = function (id, type, on) {
-    var had = A.fxPads[id];
-    if (on) { unkill(); A.fxPads[id] = type; } else delete A.fxPads[id];
-    var k, braking = false;
-    for (k in A.fxPads) if (A.fxPads[k] === 'brake') braking = true;
-    if (braking !== !!A.braked) brake(braking);
-    // les filtres balaient (0,12 s), le reste claque
-    var kind = on ? type : had;
-    applyFx(kind === 'highcut' || kind === 'lowcut' ? 0.12 : 0.03);
+  A.padFx = function (pad, on) {
+    var id = pad.id, had = A.fxPads[id];
+    if (!on && !had) return;
+    if (on) { unkill(); A.fxPads[id] = B.padFxVal(pad); } else delete A.fxPads[id];
+    var k, braking = null;
+    for (k in A.fxPads) if (A.fxPads[k].type === 'brake') braking = A.fxPads[k];
+    if (natOn() && A.target === 'phone') braking = null; // le natif s'en charge
+    if (!!braking !== !!A.braked) brake(!!braking, braking && braking.time);
+    // les filtres balaient, le reste claque
+    var f = on ? A.fxPads[id] : had;
+    applyFx(0.03, f.sweep || 0.03);
     if (A.onChange) A.onChange(id);
   };
 
@@ -358,7 +421,7 @@
     var t = A.ctx.currentTime;
     A.kill.gain.cancelScheduledValues(t);
     A.kill.gain.setTargetAtTime(1, t, 0.004);
-    A.fb.gain.setTargetAtTime(0.35 + 0.5 * (A.fxEcho || 0), t, 0.01);
+    A.fb.gain.setTargetAtTime(A.fxFb || 0.35, t, 0.01);
   }
 
   A.unkill = unkill;
@@ -509,51 +572,51 @@
     return { name: String(n), color: B.COLORS[(n - 1) % B.COLORS.length], pads: blankPads() };
   };
 
-  function unb64(b64) {
-    var bin = window.atob(b64), n = bin.length, u = new Uint8Array(n), i;
-    for (i = 0; i < n; i++) u[i] = bin.charCodeAt(i);
-    return u.buffer;
+  function tool(type, a, fr, en, color) {
+    return { type: type, micMode: a, fx: a, name: [fr, en], color: color };
   }
-
-  // Page « direct » des sons d'origine : micro et effets DJ.
-  B.FACTORY_TOOLS = [
-    { type: 'mic', micMode: 'after', name: ['MICRO', 'MIC'], color: '#E53935' },
-    { type: 'mic', micMode: 'live', name: ['MÉGAPHONE', 'MEGAPHONE'], color: '#FB8C00' },
-    { type: 'fx', fx: 'brake', mode: 'gate', name: ['VINYL STOP', 'VINYL STOP'], color: '#FDD835' },
-    { type: 'fx', fx: 'reverb', mode: 'gate', name: ['REVERB', 'REVERB'], color: '#43A047' },
-    { type: 'fx', fx: 'echo', mode: 'gate', name: ['ÉCHO', 'ECHO'], color: '#00ACC1' },
-    { type: 'fx', fx: 'highcut', mode: 'gate', name: ['COUPE-HAUT', 'HIGH CUT'], color: '#1E88E5' },
-    { type: 'fx', fx: 'gate', mode: 'gate', name: ['HACHOIR', 'CHOPPER'], color: '#8E24AA' },
-    { type: 'fx', fx: 'cut', mode: 'gate', name: ['CUT', 'CUT'], color: '#EC407A' }
+  // Pages d'origine : les sons synthétisés (js/synth.js) et, mêlés à eux, le
+  // micro et les effets DJ. Une chaîne désigne un son de B.FACTORY.
+  B.FACTORY_LAYOUT = [
+    { name: ['AMBIANCE', 'CROWD'], color: '#E53935', pads: ['airhorn', 'siren', 'whistle', 'vuvuzela', 'clapStade', 'batucada',
+      tool('mic', 'live', 'MÉGAPHONE', 'MEGAPHONE', '#FB8C00'), tool('fx', 'highcut', 'COUPE-HAUT', 'HIGH CUT', '#1E88E5')] },
+    { name: ['RÉFS', 'TUNES'], color: '#1E88E5', pads: ['bellaCiao', 'cancan', 'toreador', 'walkyries', 'cucaracha', 'marcheFunebre',
+      tool('fx', 'brake', 'VINYL STOP', 'VINYL STOP', '#FDD835'), tool('fx', 'reverb', 'REVERB', 'REVERB', '#43A047')] },
+    { name: ['MIX', 'MIX'], color: '#8E24AA', pads: ['techno', 'drop', 'badumtss', 'tromboneTriste',
+      tool('mic', 'after', 'MICRO', 'MIC', '#E53935'), tool('fx', 'echo', 'ÉCHO', 'ECHO', '#00ACC1'),
+      tool('fx', 'gate', 'HACHOIR', 'CHOPPER', '#8E24AA'), tool('fx', 'cut', 'CUT', 'CUT', '#EC407A')] }
   ];
 
-  // Sons d'origine : enregistrements embarqués (js/factory.js), décodés puis
-  // stockés comme n'importe quel son importé (premier lancement / remise à zéro).
+  // Premier lancement / remise à zéro : synthétise les sons et les stocke
+  // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
-    var defs = B.FACTORY, i = 0, en = B.lang === 'en';
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), lang: B.lang, vibrate: true, cur: 0, pages: [] };
-    B.FACTORY_PAGES.forEach(function (pg) { cfg.pages.push({ name: pg.name[en ? 1 : 0], color: pg.color, pads: blankPads() }); });
-    // dernière page : micro et effets DJ
-    var tools = { name: en ? 'LIVE' : 'DIRECT', color: '#ECEFF1', pads: [] };
-    B.FACTORY_TOOLS.forEach(function (d) {
-      var p = { id: B.uid('p'), type: d.type, name: d.name[en ? 1 : 0], color: d.color };
-      if (d.type === 'mic') { p.micMode = d.micMode; p.denoise = 0.5; p.vol = 1; }
-      else { p.fx = d.fx; p.mode = d.mode; }
-      tools.pads.push(p);
+    var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), fxTarget: 'boucan', fxGlobal: false,
+      lang: B.lang, vibrate: true, cur: 0, pages: [] };
+    B.FACTORY_LAYOUT.forEach(function (pg) {
+      var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
+      pg.pads.forEach(function (d, k) {
+        if (typeof d === 'string') { jobs.push({ page: page, k: k, def: B.FACTORY[d] }); return; }
+        var p = page.pads[k] = { id: B.uid('p'), type: d.type, name: d.name[en], color: d.color };
+        if (d.type === 'mic') { p.micMode = d.micMode; p.denoise = 0.5; p.vol = 1; }
+        else { p.fx = d.fx; p.mode = 'gate'; }
+      });
+      cfg.pages.push(page);
     });
-    return new Promise(function (res) {
+    return new Promise(function (res, rej) {
       (function next() {
-        if (i >= defs.length) { cfg.pages.push(tools); res(cfg); return; }
-        var d = defs[i], k = i;
-        function done() { i++; if (onProgress) onProgress(i, defs.length); setTimeout(next, 0); }
-        var data;
-        try { data = unb64(B.FACTORY_AUDIO[d.audio]); } catch (e) { done(); return; }
-        A.importAudio(data).then(function (r) {
-          cfg.pages[Math.floor(k / B.SLOTS)].pads[k % B.SLOTS] = {
-            id: B.uid('p'), type: 'sample', name: d.name[en ? 1 : 0], color: d.color, mode: d.mode, loop: !!d.loop,
-            vol: 1, sample: r.id, start: 0, end: r.buffer.duration, fadeIn: 0, fadeOut: d.fadeOut || 0
+        if (i >= jobs.length) { res(cfg); return; }
+        var j = jobs[i], d = j.def, pcm, id = B.uid('s');
+        try { pcm = d.make(); } catch (e) { rej(e); return; }
+        D.put('samples', id, B.encodeWav([pcm], B.SR)).then(function () {
+          j.page.pads[j.k] = {
+            id: B.uid('p'), type: 'sample', name: d.name[en], color: d.color, mode: d.mode, loop: !!d.loop,
+            vol: 1, sample: id, start: 0, end: pcm.length / B.SR, fadeIn: 0, fadeOut: 0
           };
-        })['catch'](function () {}).then(done); // un son illisible laisse sa case vide
+          i++;
+          if (onProgress) onProgress(i, jobs.length);
+          setTimeout(next, 0);
+        }, rej);
       })();
     });
   };
@@ -577,6 +640,8 @@
       if (cfg.fxList.indexOf(ty) >= 0) { cfg.fx.type = ty; cfg.fx.amt = num(raw.fx.amt, 0, 0, 1); }
     }
     cfg.vibrate = raw.vibrate !== false;
+    cfg.fxTarget = B.TARGETS.indexOf(raw.fxTarget) >= 0 ? raw.fxTarget : 'boucan';
+    cfg.fxGlobal = !!raw.fxGlobal;
     (raw.pages instanceof Array ? raw.pages : []).slice(0, B.MAX_PAGES).forEach(function (pg, k) {
       var page = B.newPage(k + 1);
       if (pg && typeof pg === 'object') {
@@ -594,6 +659,8 @@
             base.type = 'fx';
             base.fx = B.PAD_FX.indexOf(p.fx) >= 0 ? p.fx : 'brake';
             base.mode = p.mode === 'toggle' ? 'toggle' : 'gate';
+            if (typeof p.p1 === 'number') base.p1 = num(p.p1, 0, 0, 1);
+            if (typeof p.p2 === 'number') base.p2 = num(p.p2, 0, 0, 1);
           } else {
             if (typeof p.sample !== 'string' || (hasSample && !hasSample(p.sample))) return;
             base.mode = p.mode === 'toggle' || p.mode === 'gate' ? p.mode : 'oneshot';

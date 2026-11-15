@@ -11,12 +11,13 @@ Soundboard Android ultra simple, pensé pour être joué d'une main, à vélo, e
 - **STOP** coupe tout, y compris les queues de reverb et d'écho.
 - **ÉDIT** (appui long) pour tout régler ; interface en français ou en anglais.
 - **Export / import** de toute la config (pages, réglages et sons) dans un seul fichier `.boucan`.
-- Sons d'origine : enregistrements libres de droits de Wikimedia Commons (voir `sounds/CREDITS.md`).
+- Sons d'origine : 16 sons synthétisés dans l'app (aucun fichier audio embarqué), répartis sur 3 pages avec le micro et les effets DJ.
+- Les effets peuvent aussi agir sur le son des autres applis (Spotify…) : MENU, « Les effets agissent sur ». Android 9 minimum ; Boucan se branche sur la session audio du lecteur quand il l'annonce, sinon sur toute la sortie du téléphone (`PhoneFx.java`).
 - Pas d'accès Internet, fonctionne hors ligne. Android 5.0 et plus.
 
 ## Installer
 
-Télécharger `dist/Boucan-1.2.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
+Télécharger `dist/Boucan-1.3.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
 depuis cette source quand Android le demande.
 
 ## Organisation
@@ -24,7 +25,7 @@ depuis cette source quand Android le demande.
 | Dossier | Contenu |
 | --- | --- |
 | `web/` | L'app elle-même (HTML, CSS, JavaScript ES5, sans dépendance). S'ouvre aussi dans un navigateur. |
-| `web/js/factory.js` | Sons d'origine, généré par `sounds/build.py` à partir des extraits de `sounds/`. |
+| `web/js/synth.js` | Sons d'origine, synthétisés au premier lancement. |
 | `web/js/mic.js` | Débruiteur et capture micro. |
 | `web/js/i18n.js` | Textes français et anglais. |
 | `web/js/core.js` | Stockage (IndexedDB), moteur audio (Web Audio), format `.boucan`. |

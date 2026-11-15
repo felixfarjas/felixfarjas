@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.media.audiofx.AudioEffect;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -64,6 +66,8 @@ public class MainActivity extends Activity {
     private PermissionRequest micRequest;
     private volatile boolean french = true;
     private Vibrator vibrator;
+    private PhoneFx phoneFx; // effets sur le son des autres applis (Android 9+)
+    private final SessionReceiver sessions = new SessionReceiver();
 
     @Override
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
@@ -72,6 +76,26 @@ public class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
         vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+
+        if (Build.VERSION.SDK_INT >= 28) phoneFx = new PhoneFx(this);
+        // Les lecteurs de musique annoncent leur session audio : on écoute aussi
+        // tant que l'app tourne (le manifeste, lui, écoute quand elle est fermée).
+        IntentFilter f = new IntentFilter(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION);
+        f.addAction(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(sessions, f, RECEIVER_EXPORTED);
+        else registerReceiver(sessions, f);
+        SessionReceiver.listener = new Runnable() {
+            @Override
+            public void run() {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (web != null) web.evaluateJavascript("window.Boucan&&Boucan.natChanged&&Boucan.natChanged()", null);
+                    }
+                });
+            }
+        };
+        equalizerIntent(getIntent());
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -125,6 +149,19 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        equalizerIntent(intent);
+    }
+
+    /** Un lecteur ouvre Boucan comme « égaliseur » : il donne sa session audio. */
+    private void equalizerIntent(Intent intent) {
+        if (intent == null || !AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL.equals(intent.getAction())) return;
+        SessionReceiver.note(this, intent);
+        setResult(RESULT_OK);
+    }
+
+    @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
@@ -154,6 +191,12 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        SessionReceiver.listener = null;
+        try {
+            unregisterReceiver(sessions);
+        } catch (RuntimeException ignored) {
+        }
+        if (phoneFx != null) phoneFx.release();
         closeExport();
         if (web != null) {
             root.removeView(web);
@@ -362,6 +405,26 @@ public class MainActivity extends Activity {
                     vibrator.vibrate(ms);
                 }
             } catch (Exception ignored) {
+            }
+        }
+
+        /** Prépare ou libère les effets sur le son des autres applis ; renvoie l'état en JSON. */
+        @JavascriptInterface
+        public String phoneFxSetup(boolean on, boolean forceGlobal) {
+            if (phoneFx == null) return "{\"mode\":\"none\"}";
+            try {
+                return phoneFx.setup(on, forceGlobal);
+            } catch (Throwable e) {
+                return "{\"mode\":\"fail\"}";
+            }
+        }
+
+        @JavascriptInterface
+        public void phoneFx(float hc, float lc, float rev, float gateHz, float gateDepth, boolean kill, int brakeMs, int sweepMs) {
+            if (phoneFx == null) return;
+            try {
+                phoneFx.set(hc, lc, rev, gateHz, gateDepth, kill, brakeMs, sweepMs);
+            } catch (Throwable ignored) {
             }
         }
 
