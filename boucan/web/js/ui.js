@@ -118,7 +118,7 @@
       p.inn.style.backgroundColor = pad.color; p.inn.style.color = ink(pad.color);
       p.name.textContent = ''; p.tag.textContent = ''; p.ico.innerHTML = '';
       setProg(p, null);
-      if (pad.type === 'player') playerPaint(p.pl); else deckPaint(p.dk);
+      if (pad.type === 'player') playerPaint(p.pl); else { p.dk.fg = ink(pad.color); deckPaint(p.dk); }
       return;
     }
     if (!pad) {
@@ -160,23 +160,31 @@
     for (var i = 0; i < B.SLOTS; i++) renderPad(i);
   }
 
+  // Les onglets sont mis à jour sur place : un doigt posé dessus garde sa cible.
+  var tabEls = [];
   function renderTabs() {
-    var live = {}, n = B.cfg.pages.length;
-    B.eachPad(function (p, pi) { if (A.voices[p.id] || A.fxPads[p.id]) live[pi] = 1; });
-    el.tabs.innerHTML = '';
-    B.cfg.pages.forEach(function (pg, k) {
-      var t = h('div', 'tab' + (k === B.cfg.cur ? ' cur' : '') + (live[k] ? ' live' : ''));
-      var inn = h('div', 'tabIn', pg.name || String(k + 1));
-      t.setAttribute('data-k', k);
-      if (k === B.cfg.cur) { inn.style.background = pg.color; inn.style.color = ink(pg.color); }
-      else inn.style.borderBottomColor = pg.color;
-      add(el.tabs, add(t, inn));
-    });
-    if (S.edit && n < B.MAX_PAGES) {
-      var a = h('div', 'tab add');
-      a.setAttribute('data-k', 'add');
-      add(el.tabs, add(a, h('div', 'tabIn', '+')));
+    var live = {}, n = B.cfg.pages.length, want = n + (S.edit && n < B.MAX_PAGES ? 1 : 0), k;
+    var music = B.deck.playing();
+    B.eachPad(function (p, pi) { if (A.voices[p.id] || A.fxPads[p.id] || (music && p.type === 'deck')) live[pi] = 1; });
+    if (tabEls.length !== want) {
+      el.tabs.innerHTML = ''; tabEls = [];
+      for (k = 0; k < want; k++) {
+        var e = { t: h('div', 'tab'), inn: h('div', 'tabIn'), lbl: h('span'), eq: h('span', 'eq') };
+        e.eq.innerHTML = '<i></i><i></i><i></i>';
+        add(el.tabs, add(e.t, add(e.inn, e.lbl, e.eq)));
+        tabEls.push(e);
+      }
     }
+    tabEls.forEach(function (e, k) {
+      var pg = B.cfg.pages[k], cur = k === B.cfg.cur, st = e.inn.style;
+      var cls = !pg ? 'tab add' : 'tab' + (cur ? ' cur' : '') + (live[k] ? ' live' : '');
+      if (e.t.className !== cls) e.t.className = cls;
+      e.t.setAttribute('data-k', pg ? k : 'add');
+      e.lbl.textContent = pg ? pg.name || String(k + 1) : '+';
+      st.background = pg && cur ? pg.color : '';
+      st.color = pg && cur ? ink(pg.color) : '';
+      st.borderBottomColor = pg && !cur ? pg.color : '';
+    });
   }
 
   function renderFx() {
@@ -202,7 +210,7 @@
   };
 
   // ====================== Widgets de musique ======================
-  // SPOTIFY (une rangée) : pilote le lecteur de musique du téléphone par le
+  // PHONE CONTROL (une rangée) : pilote le lecteur de musique du téléphone par le
   // natif — titre, pochette, lecture/pause, suivant, précédent.
   var PL = { st: null, art: '', artKey: null };
   var SVG_PREV = '<svg viewBox="0 0 24 24" width="30" height="30"><path d="M6 5h3v14H6zM20 5v14l-10-7z" fill="currentColor"/></svg>';
@@ -259,8 +267,9 @@
   // dossier, album ou artiste, avec son propre volume (voir deck.js).
   function deckDom() {
     var d = { el: h('div', 'deck'), head: cmdBtn('dkHead', 'dlist'), list: h('div', 'dkList'), msg: cmdBtn('dkMsg', 'dperm'),
-      now: h('div', 'dkNow'), barIn: h('div'), play: cmdBtn('plBtn plPlay', 'dtoggle'), vol: h('div', 'dkVol'), fill: h('div', 'fill'), rev: -1, cur: -1 };
-    add(d.el, d.head, add(h('div', 'dkMid'), d.list, d.msg), d.now, add(h('div', 'dkBar'), d.barIn),
+      now: h('div', 'dkNow'), wave: h('canvas', 'dkWave'), play: cmdBtn('plBtn plPlay', 'dtoggle'), vol: h('div', 'dkVol'), fill: h('div', 'fill'),
+      rev: -1, cur: -1, seekF: null, fg: '#fff' };
+    add(d.el, d.head, add(h('div', 'dkMid'), d.list, d.msg), d.now, d.wave,
       add(h('div', 'dkBtns'), cmdBtn('plBtn', 'dprev', SVG_PREV), d.play, cmdBtn('plBtn', 'dnext', SVG_NEXT)), add(d.vol, d.fill, h('div', 'lbl', 'VOL')));
     slider(d.vol, function (v) {
       if (S.edit) return;
@@ -276,7 +285,60 @@
       buzz();
       B.deck.play(B.deck.queue[parseInt(e.getAttribute('data-ti'), 10)]);
     });
+    // mini-pochettes : chargées seulement pour les lignes visibles
+    var thT = null;
+    d.thumbs = function () {
+      var rows = d.list.childNodes, a = Math.max(0, Math.floor(d.list.scrollTop / 42) - 2), b = Math.min(rows.length, a + Math.ceil(d.list.clientHeight / 42) + 5), k;
+      for (k = a; k < b; k++) {
+        if (rows[k].done) continue;
+        rows[k].done = true;
+        rows[k].firstChild.style.backgroundImage = 'url(' + B.deck.base + 'a/' + B.deck.queue[k].id + ')';
+      }
+    };
+    on(d.list, 'scroll', function () {
+      if (thT) return;
+      thT = setTimeout(function () { thT = null; d.thumbs(); }, 150);
+    });
+    // onde du morceau : glisser dessus pour avancer ou reculer
+    function seekAt(x) {
+      var r = d.wave.getBoundingClientRect();
+      d.seekF = Math.max(0, Math.min(1, (x - r.left) / r.width));
+      waveDraw(d);
+    }
+    function seekEnd() {
+      if (d.seekF === null) return;
+      B.deck.seek(d.seekF);
+      d.seekHold = Date.now() + 700; // le temps que le lecteur saute
+      waveDraw(d);
+    }
+    on(d.wave, 'touchstart', function (ev) { ev.preventDefault(); if (!S.edit && B.deck.track) seekAt(ev.targetTouches[0].clientX); });
+    on(d.wave, 'touchmove', function (ev) { ev.preventDefault(); if (d.seekF !== null && ev.targetTouches[0]) seekAt(ev.targetTouches[0].clientX); });
+    on(d.wave, 'touchend', seekEnd);
+    on(d.wave, 'touchcancel', function () { d.seekF = null; });
+    on(d.wave, 'mousedown', function (ev) { if (!S.edit && B.deck.track) { seekAt(ev.clientX); seekEnd(); } });
     return d;
+  }
+  function waveDraw(d) {
+    var D = B.deck, c = d.wave, dpr = window.devicePixelRatio || 1, cw = c.clientWidth, W = Math.floor(cw * dpr), H = Math.floor(c.clientHeight * dpr);
+    if (!W || !H) return;
+    if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+    if (d.seekF !== null && d.seekHold && Date.now() > d.seekHold) { d.seekF = null; d.seekHold = 0; }
+    var g = c.getContext('2d'), w = D.wave, nb = Math.floor(cw / 3), prog = d.seekF !== null ? d.seekF : D.progress(), k;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = d.fg;
+    for (k = 0; k < nb; k++) {
+      var v = 0.12;
+      if (w) {
+        var a = Math.floor(k * w.length / nb), b = Math.max(a + 1, Math.floor((k + 1) * w.length / nb)), m = 0, q;
+        for (q = a; q < b; q++) if (w[q] > m) m = w[q];
+        v = Math.max(0.06, m / 255);
+      }
+      var hh = Math.max(dpr, v * H);
+      g.globalAlpha = (k + 0.5) / nb <= prog ? 1 : 0.32;
+      g.fillRect(k * 3 * dpr, (H - hh) / 2, 2 * dpr, hh);
+    }
+    g.globalAlpha = 1;
+    if (D.track) g.fillRect(Math.min(W - 2 * dpr, prog * W), 0, 2 * dpr, H);
   }
   function deckPaint(d) {
     var D = B.deck, ok = D.state === 'ok' && D.queue.length > 0, k;
@@ -287,12 +349,13 @@
       d.rev = D.rev; d.cur = -1;
       d.list.innerHTML = '';
       for (k = 0; k < D.queue.length && k < 500; k++) {
-        var row = h('div', 'dkRow', D.queue[k].t + (D.queue[k].a ? '  ·  ' + D.queue[k].a : ''));
+        var row = h('div', 'dkRow');
         row.setAttribute('data-ti', k);
-        add(d.list, row);
+        add(d.list, add(row, h('span', 'dkTh'), h('span', '', D.queue[k].t + (D.queue[k].a ? '  ·  ' + D.queue[k].a : ''))));
       }
       d.list.scrollTop = 0;
     }
+    d.thumbs();
     var cur = D.track ? D.queue.indexOf(D.track) : -1;
     if (cur !== d.cur) {
       if (d.list.childNodes[d.cur]) d.list.childNodes[d.cur].className = 'dkRow';
@@ -300,36 +363,56 @@
       d.cur = cur;
     }
     d.now.textContent = D.track ? D.track.t + (D.track.a ? ' — ' + D.track.a : '') : '';
-    d.barIn.style.width = (D.progress() * 100) + '%';
     d.play.innerHTML = D.playing() ? SVG_PAUSE : SVG_PLAY;
     d.fill.style.width = (B.cfg.deck.vol * 100) + '%';
+    waveDraw(d);
   }
+  var deckWas = false;
   function deckPaintAll() {
     if (!B.cfg) return;
     page().pads.forEach(function (p, i) { if (p && p.type === 'deck') deckPaint(pads[i].dk); });
+    // l'onglet de la page du lecteur s'anime quand la musique joue
+    if (B.deck.playing() !== deckWas) { deckWas = B.deck.playing(); renderTabs(); }
   }
-  // Choix de la liste à lire.
+  function lstBtn(label, n, cur, fn) {
+    var b = h('button', 'btn gap lst' + (cur ? ' on' : ''), label + '  (' + n + ')');
+    on(b, 'click', fn);
+    return b;
+  }
+  // Liste à lire : tout le dossier source, ou l'un de ses sous-dossiers.
   function openLists() {
-    var D = B.deck, kind = B.cfg.deck.kind;
+    var D = B.deck;
     D.load();
     sheet(t('dkLists'), function (body, sh) {
-      var box = h('div');
-      function fill() {
-        box.innerHTML = '';
-        var items = kind === 'all' ? [{ key: '', n: D.tracks.length }] : D.lists(kind);
-        items.forEach(function (it) {
-          var cur = kind === B.cfg.deck.kind && (kind === 'all' || it.key === B.cfg.deck.key);
-          var b = h('button', 'btn gap lst' + (cur ? ' on' : ''), (kind === 'all' ? t('dkAll') : it.key || '?') + '  (' + it.n + ')');
-          on(b, 'click', function () { D.setList(kind, it.key); sh.close(); });
-          add(box, b);
-        });
-        if (!items.length) add(box, h('div', 'note', t('dkEmpty')));
-      }
-      var kinds = choice([['all', t('kAll')], ['dir', t('kDir')], ['album', t('kAlbum')], ['artist', t('kArtist')]], kind, function (k) { kind = k; fill(); });
-      kinds.className = 'row tight';
-      sec(body, '', kinds, box);
-      fill();
+      var s = sec(body, '');
+      function item(key, label, n) { add(s, lstBtn(label, n, B.cfg.deck.sub === key, function () { D.setSub(key); sh.close(); })); }
+      item('', t('dkAll'), D.count());
+      D.subs().forEach(function (x) { item(x.key, x.key === '.' ? t('dkHere') : D.leaf(x.key), x.n); });
+      add(s, h('div', 'note', t('dkRootNote', rootLabel(B.cfg.deck.root))));
     }, deckPaintAll);
+  }
+  function rootLabel(path) {
+    var D = B.deck, base = D.common + '/';
+    return !path || path === D.common ? t('dkRootAuto') : path.indexOf(base) === 0 ? path.substr(base.length) : path;
+  }
+  // Dossier source des musiques (réglage du menu).
+  function openRoots(done) {
+    var D = B.deck;
+    D.load();
+    sheet(t('dkRoot'), function (body, sh) {
+      var s = sec(body, '');
+      if (D.state === 'perm') {
+        var pb = h('button', 'btn accent', t('dkPerm'));
+        on(pb, 'click', function () { D.ask(); sh.close(); });
+        add(s, pb);
+        return;
+      }
+      add(s, lstBtn(t('dkRootAuto'), D.tracks.length, !B.cfg.deck.root, function () { D.setRoot(''); sh.close(); }));
+      D.roots().forEach(function (r) {
+        if (r.key === D.common) return; // c'est « toutes les musiques »
+        add(s, lstBtn(rootLabel(r.key), r.n, B.cfg.deck.root === r.key, function () { D.setRoot(r.key); sh.close(); }));
+      });
+    }, function () { deckPaintAll(); if (done) done(); });
   }
 
   // Appui sur un bouton d'un widget.
@@ -573,8 +656,8 @@
   function bindPlay() {
     // Swipe horizontal franc et rapide = page voisine. sw.on : le geste est reconnu.
     var sw = null;
-    function inList(e) {
-      while (e && e !== el.grid) { if (e.className === 'dkList') return true; e = e.parentNode; }
+    function inCls(e, cls) {
+      while (e && e !== el.grid) { if (e.className === cls) return true; e = e.parentNode; }
       return false;
     }
     function touchOf(list, id) {
@@ -584,9 +667,10 @@
     on(el.grid, 'touchstart', function (ev) {
       A.resume();
       if (sw && sw.on) { ev.preventDefault(); return; }
-      var list = inList(ev.target), first = ev.changedTouches[0];
+      var list = inCls(ev.target, 'dkList'), first = ev.changedTouches[0];
+      var own = list || inCls(ev.target, 'dkVol') || inCls(ev.target, 'dkWave'); // zones qui ont leur propre geste
       if (!S.edit && !list) ev.preventDefault();
-      sw = B.cfg.swipe && !list && ev.touches.length === 1 && B.cfg.pages.length > 1 && !S.moving ?
+      sw = B.cfg.swipe && !own && ev.touches.length === 1 && B.cfg.pages.length > 1 && !S.moving ?
         { id: first.identifier, x: first.clientX, y: first.clientY, t: Date.now(), on: false, dx: 0 } : null;
       if (S.edit || list) return;
       for (var k = 0; k < ev.changedTouches.length; k++) {
@@ -652,6 +736,13 @@
       ev.preventDefault();
       var k = tabKey(ev.changedTouches[0].target);
       if (k !== null && k !== 'add') { buzz(); goPage(parseInt(k, 10)); }
+    });
+    on(el.tabs, 'touchmove', function (ev) {
+      if (S.edit) return;
+      ev.preventDefault();
+      var r = el.tabs.getBoundingClientRect(), tc = ev.changedTouches[0];
+      var k = tabKey(document.elementFromPoint(tc.clientX, r.top + r.height / 2));
+      if (k !== null && k !== 'add' && parseInt(k, 10) !== B.cfg.cur) { buzz(); goPage(parseInt(k, 10)); }
     });
     on(el.tabs, 'mousedown', function (ev) {
       if (S.edit) return;
@@ -1036,14 +1127,14 @@
         B.saveNow(); sh.close(); renderAll(); playerPoll();
       }
       big('deck', t('typeDeck'), t('noteDeck'), function () { widget('deck', t('typeDeck'), '#37474F'); });
-      big('player', 'SPOTIFY', t('notePlayer'), function () { widget('player', 'SPOTIFY', '#2E7D32'); });
+      big('player', 'PHONE CONTROL', t('notePlayer'), function () { widget('player', 'PHONE CONTROL', '#2E7D32'); });
     });
   }
 
   // Éditeur des widgets de musique.
   function editWidget(pi, i) {
     var pg = B.cfg.pages[pi], pad = pg.pads[i], deck = pad.type === 'deck';
-    sheet(deck ? t('typeDeck') : 'SPOTIFY', function (body, sh) {
+    sheet(deck ? t('typeDeck') : 'PHONE CONTROL', function (body, sh) {
       sec(body, '', h('div', 'note', t(deck ? 'dkHelp' : 'plHelp')));
       if (!deck && NATIVE && window.BoucanNative.playerCmd) {
         var pb = h('button', 'btn accent', t('plAllow'));
@@ -1061,7 +1152,7 @@
       }), h('div', 'note', t('duckNote')));
       var clear = h('button', 'btn danger', t('clear'));
       on(clear, 'click', function () {
-        ask(t('askClear', deck ? t('typeDeck') : 'SPOTIFY'), t('doClear'), function () { pg.pads[i] = null; sh.close(); });
+        ask(t('askClear', deck ? t('typeDeck') : 'PHONE CONTROL'), t('doClear'), function () { pg.pads[i] = null; sh.close(); });
       });
       sec(body, t('padSec'), clear);
     }, function () { B.saveNow(); renderAll(); });
@@ -1469,6 +1560,11 @@
         add(fxBox, add(cell, b));
       });
       sec(body, t('fxList'), fxBox, h('div', 'note', t('fxNote')));
+
+      var rootB = btn('', '', function () { openRoots(rootLbl); });
+      function rootLbl() { rootB.textContent = rootLabel(B.cfg.deck.root); }
+      rootLbl();
+      sec(body, t('dkRoot'), rootB, h('div', 'note', t('dkRootHelp')));
 
       sec(body, t('lang'), choice(B.LANGS, B.lang, function (l) {
         B.lang = B.cfg.lang = l;

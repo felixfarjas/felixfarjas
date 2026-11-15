@@ -403,7 +403,7 @@ public class MainActivity extends Activity {
         return Build.VERSION.SDK_INT < 23 || checkSelfPermission(musicPermission()) == PackageManager.PERMISSION_GRANTED;
     }
 
-    /** Tous les morceaux du téléphone, en JSON : id, titre, artiste, album, dossier, n° de piste. */
+    /** Tous les morceaux du téléphone, en JSON : id, titre, artiste, album, chemin du dossier, n° de piste. */
     @SuppressWarnings("deprecation")
     private String listMusic() {
         JSONArray out = new JSONArray();
@@ -416,15 +416,12 @@ public class MainActivity extends Activity {
             while (c != null && c.moveToNext()) {
                 JSONObject o = new JSONObject();
                 String artist = c.getString(2), path = c.getString(4), dir = "";
-                if (path != null) {
-                    File parent = new File(path).getParentFile();
-                    if (parent != null) dir = parent.getName();
-                }
+                if (path != null && path.lastIndexOf('/') > 0) dir = path.substring(0, path.lastIndexOf('/'));
                 o.put("id", c.getLong(0));
                 o.put("t", c.getString(1) == null ? "?" : c.getString(1));
                 o.put("a", artist == null || "<unknown>".equals(artist) ? "" : artist);
                 o.put("al", c.getString(3) == null ? "" : c.getString(3));
-                o.put("d", dir);
+                o.put("p", dir);
                 o.put("n", c.getInt(5));
                 out.put(o);
             }

@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '1.5';
+  B.VERSION = '1.6';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -42,7 +42,6 @@
     }
     return -1;
   };
-  B.DECK_KINDS = ['all', 'dir', 'album', 'artist'];
   // Valeurs réelles d'une case FX, d'après ses curseurs.
   B.padFxVal = function (pad) {
     var d = B.PAD_FX_DEF[pad.fx] || [0, 0], f = pad.fx;
@@ -568,14 +567,14 @@
     { name: ['MIX', 'MIX'], color: '#8E24AA', pads: ['techno', 'drop', 'badumtss', 'tromboneTriste',
       tool('mic', 'after', 'MICRO', 'MIC', '#E53935'), tool('fx', 'echo', 'ÉCHO', 'ECHO', '#00ACC1'),
       tool('fx', 'gate', 'HACHOIR', 'CHOPPER', '#8E24AA'), tool('fx', 'cut', 'CUT', 'CUT', '#EC407A')] },
-    { name: ['MUSIQUE', 'MUSIC'], color: '#43A047', pads: [tool('deck', '', 'LECTEUR', 'PLAYER', '#37474F'), null, null, null, null, null, tool('player', '', 'SPOTIFY', 'SPOTIFY', '#2E7D32')] }
+    { name: ['MUSIQUE', 'MUSIC'], color: '#43A047', pads: [tool('deck', '', 'LECTEUR', 'PLAYER', '#37474F'), null, null, null, null, null, tool('player', '', 'PHONE CONTROL', 'PHONE CONTROL', '#2E7D32')] }
   ];
 
   // Premier lancement / remise à zéro : synthétise les sons et les stocke
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', swipe: true, deck: { kind: 'all', key: '', vol: 0.8, fx: true },
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', swipe: true, deck: { root: '', sub: '', vol: 0.8, fx: true },
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -628,7 +627,7 @@
     cfg.duck = B.DUCKS.indexOf(raw.duck) >= 0 ? raw.duck : 'duck';
     cfg.swipe = raw.swipe !== false;
     var dk = raw.deck && typeof raw.deck === 'object' ? raw.deck : {};
-    cfg.deck = { kind: B.DECK_KINDS.indexOf(dk.kind) >= 0 ? dk.kind : 'all', key: str(dk.key, '', 300), vol: num(dk.vol, 0.8, 0, 1), fx: dk.fx !== false };
+    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), fx: dk.fx !== false };
     (raw.pages instanceof Array ? raw.pages : []).slice(0, B.MAX_PAGES).forEach(function (pg, k) {
       var page = B.newPage(k + 1);
       if (pg && typeof pg === 'object') {

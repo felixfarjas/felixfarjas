@@ -93,16 +93,15 @@ body.editing .tag { bottom: 13px; }
 .dkHead { flex: none; height: 44px; line-height: 44px; padding: 0 12px; border-radius: 8px; background: rgba(0, 0, 0, .35); font-size: 14px; letter-spacing: .5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dkMid { flex: 1; min-height: 0; position: relative; margin: 6px 0; }
 .dkList { position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; border-radius: 8px; background: rgba(0, 0, 0, .3); }
-.dkRow { height: 42px; line-height: 42px; padding: 0 10px; font-size: 14px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid rgba(255, 255, 255, .08); }
+.dkRow { height: 42px; line-height: 42px; padding: 0 10px 0 5px; font-size: 14px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid rgba(255, 255, 255, .08); }
 .dkRow.cur { background: rgba(255, 255, 255, .28); font-weight: 700; }
 .dkNow { flex: none; height: 20px; line-height: 20px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dkBar { flex: none; height: 4px; border-radius: 2px; background: rgba(0, 0, 0, .35); overflow: hidden; }
-.dkBar div { height: 100%; width: 0; background: currentColor; }
-.dkBtns { flex: none; height: 56px; display: flex; margin: 6px -3px; }
+.dkWave { flex: none; display: block; width: 100%; height: 36px; margin-top: 2px; touch-action: none; }
+.dkTh { display: inline-block; vertical-align: middle; width: 32px; height: 32px; margin: -3px 8px 0 0; border-radius: 4px; background-color: rgba(0, 0, 0, .35); background-size: cover; background-position: center; }
+.dkBtns { flex: none; height: 52px; display: flex; margin: 6px -3px; }
 .dkVol { flex: none; position: relative; height: 26px; border-radius: 6px; background: rgba(0, 0, 0, .35); overflow: hidden; }
 .dkVol .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255, 255, 255, .3); border-right: 3px solid currentColor; }
 .dkVol .lbl { position: absolute; left: 10px; top: 0; line-height: 26px; font-size: 10px; letter-spacing: 1px; opacity: .8; }
-.row.tight .btn { font-size: 12px; padding: 6px 2px; letter-spacing: 0; }
 .btn.lst { text-align: left; padding-left: 14px; }
 .btn.tdeck { background: #37474F; }
 
@@ -129,7 +128,16 @@ body.editing .tag { bottom: 13px; }
 }
 .tab.cur .tabIn { line-height: 58px; border-bottom: 0; }
 .tab.add .tabIn { border-bottom-color: #1c1c1c; font-size: 26px; font-weight: 400; color: #fff; }
-.tab.live .tabIn:after { content: ''; position: absolute; right: 5px; top: 5px; width: 9px; height: 9px; border-radius: 5px; background: currentColor; }
+/* une page produit du son : trois barres qui dansent (animation gérée par la puce graphique) */
+.eq { display: none; position: absolute; right: 4px; top: 4px; height: 13px; line-height: 0; }
+.tab.live .eq { display: block; }
+.eq i { display: inline-block; width: 3px; height: 13px; margin-left: 2px; border-radius: 1px; background: currentColor;
+  -webkit-transform-origin: 50% 100%; transform-origin: 50% 100%; -webkit-animation: eq .45s ease-in-out infinite alternate; animation: eq .45s ease-in-out infinite alternate; }
+.eq i:nth-child(2) { -webkit-animation-delay: -.2s; animation-delay: -.2s; }
+.eq i:nth-child(3) { -webkit-animation-delay: -.33s; animation-delay: -.33s; }
+@-webkit-keyframes eq { from { -webkit-transform: scaleY(.2); } to { -webkit-transform: scaleY(1); } }
+@keyframes eq { from { transform: scaleY(.2); } to { transform: scaleY(1); } }
+.tab.live .tabIn { color: #fff; }
 
 /* ---------- Feuilles d'édition ---------- */
 .sheet { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 10; }

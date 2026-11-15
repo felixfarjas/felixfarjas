@@ -10,14 +10,17 @@
 
   var A = B.audio;
   // state : 'none' (pas de natif), 'perm' (autorisation à donner), 'ok'
-  var D = B.deck = { base: 'https://boucan.music/', state: 'none', tracks: [], queue: [], track: null, rev: 0, onChange: null };
+  var D = B.deck = { base: 'https://boucan.music/', state: 'none', tracks: [], queue: [], track: null, rev: 0, wave: null, common: '', onChange: null };
   var au = null, gain = null, duckK = 1, rateT = null, errs = 0, want = false;
+  var WAVE_N = 240, WAVE_MAX = 60 * 1024 * 1024;
 
   function nat() { return window.BoucanNative; }
   function cfg() { return B.cfg.deck; }
   function emit() { if (D.onChange) D.onChange(); }
   function low(s) { return String(s || '').toLowerCase(); }
-  var FIELD = { dir: 'd', album: 'al', artist: 'a' };
+  function cmp(x, y) { return x < y ? -1 : x > y ? 1 : 0; }
+  function under(t, path) { return !path || t.p === path || t.p.indexOf(path + '/') === 0; }
+  D.leaf = function (path) { return path ? path.substr(path.lastIndexOf('/') + 1) : ''; };
 
   D.load = function () {
     var N = nat(), r;
@@ -26,9 +29,17 @@
     if (r === 'PERM') { D.state = 'perm'; D.tracks = []; }
     else {
       try { D.tracks = JSON.parse(r); } catch (e2) { D.tracks = []; }
+      D.tracks.forEach(function (t) { t.p = t.p || ''; });
       D.state = 'ok';
     }
-    D.queue = D.pick(cfg().kind, cfg().key);
+    // plus long dossier commun à tous les morceaux
+    var com = null;
+    D.tracks.forEach(function (t) {
+      if (com === null) { com = t.p; return; }
+      while (com && !under(t, com)) com = com.substr(0, com.lastIndexOf('/'));
+    });
+    D.common = com || '';
+    D.queue = D.pick();
     D.rev++;
     emit();
   };
@@ -36,36 +47,45 @@
   // appelé par le natif après la réponse à la demande d'autorisation
   B.deckPerm = function () { if (B.cfg) D.load(); };
 
-  // Les « playlists » : dossiers, albums ou artistes, avec leur nombre de morceaux.
-  D.lists = function (kind) {
-    var f = FIELD[kind], seen = {}, out = [];
-    if (!f) return out;
+  // Dossier source choisi dans les réglages (par défaut : là où sont toutes les musiques).
+  D.root = function () { return cfg().root || D.common; };
+  // Tous les dossiers qui contiennent de la musique (eux-mêmes ou plus bas) : candidats au dossier source.
+  D.roots = function () {
+    var m = {}, out = [], k;
     D.tracks.forEach(function (t) {
-      var k = t[f] || '';
-      if (!seen[k]) { seen[k] = { key: k, n: 0 }; out.push(seen[k]); }
-      seen[k].n++;
+      var p = t.p;
+      while (p && p.length >= D.common.length) { m[p] = (m[p] || 0) + 1; p = p.substr(0, p.lastIndexOf('/')); }
     });
-    out.sort(function (x, y) { return low(x.key) < low(y.key) ? -1 : low(x.key) > low(y.key) ? 1 : 0; });
+    for (k in m) out.push({ key: k, n: m[k] });
+    out.sort(function (x, y) { return cmp(low(x.key), low(y.key)); });
     return out;
   };
-  D.pick = function (kind, key) {
-    var f = FIELD[kind];
-    var q = D.tracks.filter(function (t) { return !f || (t[f] || '') === key; });
-    q.sort(function (x, y) {
-      // un album se lit dans l'ordre des pistes, le reste par titre
-      if (kind === 'album' && x.n !== y.n) return x.n - y.n;
-      return low(x.t) < low(y.t) ? -1 : low(x.t) > low(y.t) ? 1 : 0;
+  // Sous-dossiers directs du dossier source ; '.' : les morceaux posés directement dedans.
+  D.subs = function () {
+    var root = D.root(), m = {}, out = [], here = 0, k;
+    D.tracks.forEach(function (t) {
+      if (!under(t, root)) return;
+      if (t.p === root) { here++; return; }
+      var rest = t.p.substr(root.length + 1), s = root + '/' + rest.split('/')[0];
+      m[s] = (m[s] || 0) + 1;
     });
+    for (k in m) out.push({ key: k, n: m[k] });
+    out.sort(function (x, y) { return cmp(low(x.key), low(y.key)); });
+    if (here && out.length) out.unshift({ key: '.', n: here });
+    return out;
+  };
+  D.count = function () { var r = D.root(); return D.tracks.filter(function (t) { return under(t, r); }).length; };
+  D.pick = function () {
+    var root = D.root(), sub = cfg().sub;
+    var q = D.tracks.filter(function (t) { return sub === '.' ? t.p === root : under(t, sub || root); });
+    // par dossier, puis dans l'ordre des pistes, puis par titre
+    q.sort(function (x, y) { return cmp(low(x.p), low(y.p)) || x.n - y.n || cmp(low(x.t), low(y.t)); });
     return q;
   };
-  D.setList = function (kind, key) {
-    cfg().kind = kind; cfg().key = key;
-    D.queue = D.pick(kind, key);
-    D.rev++;
-    B.save();
-    emit();
-  };
-  D.listName = function () { return FIELD[cfg().kind] ? cfg().key : ''; };
+  function relist() { D.queue = D.pick(); D.rev++; B.save(); emit(); }
+  D.setSub = function (sub) { cfg().sub = sub; relist(); };
+  D.setRoot = function (root) { cfg().root = root; cfg().sub = ''; relist(); };
+  D.listName = function () { var s = cfg().sub; return s && s !== '.' ? D.leaf(s) : D.leaf(cfg().root); };
 
   function vol() { var v = cfg().vol; return v * v * duckK; }
   function ensure() {
@@ -101,6 +121,52 @@
   function index() { return D.track ? D.queue.indexOf(D.track) : -1; }
   D.playing = function () { return !!au && !au.paused && !au.ended; };
   D.progress = function () { return au && au.duration > 0 ? Math.min(1, au.currentTime / au.duration) : 0; };
+  // Avance ou recule dans le morceau (0..1).
+  D.seek = function (f) {
+    if (!au || !D.track || !(au.duration > 0)) return;
+    try { au.currentTime = Math.max(0, Math.min(0.999, f)) * au.duration; } catch (e) {}
+  };
+
+  // Forme d'onde du morceau entier : calculée une fois (le fichier est décodé
+  // en arrière-plan), puis gardée dans la base. 240 valeurs de 0 à 255.
+  var waveBusy = false;
+  function waveKey(t) { return 'wave:' + t.id; }
+  function loadWave(t) {
+    D.wave = null;
+    B.db.get('kv', waveKey(t)).then(function (w) {
+      if (D.track !== t) return;
+      if (w && w.length === WAVE_N) { D.wave = w; emit(); return; }
+      if (waveBusy) return;
+      waveBusy = true;
+      var x = new XMLHttpRequest();
+      x.open('GET', D.base + 't/' + t.id, true);
+      x.responseType = 'arraybuffer';
+      x.onerror = function () { waveBusy = false; };
+      x.onload = function () {
+        var ab = x.response;
+        function fail() { waveBusy = false; }
+        if (!ab || !ab.byteLength || ab.byteLength > WAVE_MAX) { fail(); return; }
+        function ok(buf) {
+          var d = buf.getChannelData(0), n = d.length, per = n / WAVE_N, out = new Uint8Array(WAVE_N), top = 0, pk = [], i, k;
+          for (k = 0; k < WAVE_N; k++) {
+            var a = Math.floor(k * per), b = Math.floor((k + 1) * per), step = Math.max(1, Math.floor((b - a) / 400)), m = 0;
+            for (i = a; i < b; i += step) { var v = d[i] < 0 ? -d[i] : d[i]; if (v > m) m = v; }
+            pk.push(m);
+            if (m > top) top = m;
+          }
+          for (k = 0; k < WAVE_N; k++) out[k] = Math.round(255 * pk[k] / (top || 1));
+          waveBusy = false;
+          B.db.put('kv', waveKey(t), out)['catch'](function () {});
+          if (D.track === t) { D.wave = out; emit(); } else if (D.track) loadWave(D.track);
+        }
+        try {
+          var p = A.ctx.decodeAudioData(ab, ok, fail);
+          if (p && p['catch']) p['catch'](function () {});
+        } catch (e) { fail(); }
+      };
+      x.send();
+    })['catch'](function () {});
+  }
 
   D.play = function (t) {
     if (!t) return;
@@ -113,6 +179,9 @@
     au.playbackRate = 1;
     var p = au.play();
     if (p && p['catch']) p['catch'](function () {});
+    // la lecture démarre d'abord, l'onde se calcule ensuite
+    setTimeout(function () { if (D.track === t) loadWave(t); }, 600);
+    D.wave = null;
     emit();
   };
   D.toggle = function () {
