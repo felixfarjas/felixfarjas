@@ -5,6 +5,13 @@
 (function (B) {
   'use strict';
 
+  if (!Math.tanh) {
+    Math.tanh = function (x) {
+      var e = Math.exp(2 * x);
+      return e === Infinity ? 1 : (e - 1) / (e + 1);
+    };
+  }
+
   B.VERSION = '1.1';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
@@ -438,25 +445,31 @@
     return { name: String(n), color: B.COLORS[(n - 1) % B.COLORS.length], pads: blankPads() };
   };
 
-  // Sons d'origine : synthétisés puis stockés (premier lancement / remise à zéro).
+  function unb64(b64) {
+    var bin = window.atob(b64), n = bin.length, u = new Uint8Array(n), i;
+    for (i = 0; i < n; i++) u[i] = bin.charCodeAt(i);
+    return u.buffer;
+  }
+
+  // Sons d'origine : enregistrements embarqués (js/factory.js), décodés puis
+  // stockés comme n'importe quel son importé (premier lancement / remise à zéro).
   B.buildFactory = function (onProgress) {
-    var defs = B.FACTORY, i = 0;
+    var defs = B.FACTORY, i = 0, en = B.lang === 'en';
     var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), lang: B.lang, vibrate: true, cur: 0, pages: [] };
-    B.FACTORY_PAGES.forEach(function (pg) { cfg.pages.push({ name: pg.name, color: pg.color, pads: blankPads() }); });
-    return new Promise(function (res, rej) {
+    B.FACTORY_PAGES.forEach(function (pg) { cfg.pages.push({ name: pg.name[en ? 1 : 0], color: pg.color, pads: blankPads() }); });
+    return new Promise(function (res) {
       (function next() {
         if (i >= defs.length) { res(cfg); return; }
-        var d = defs[i], pcm, id = B.uid('s');
-        try { pcm = d.make(); } catch (e) { rej(e); return; }
-        D.put('samples', id, B.encodeWav([pcm], B.SR)).then(function () {
-          cfg.pages[Math.floor(i / B.SLOTS)].pads[i % B.SLOTS] = {
-            id: B.uid('p'), name: d.name, color: d.color, mode: d.mode, loop: !!d.loop,
-            vol: 1, sample: id, start: 0, end: pcm.length / B.SR, fadeIn: 0, fadeOut: 0
+        var d = defs[i], k = i;
+        function done() { i++; if (onProgress) onProgress(i, defs.length); setTimeout(next, 0); }
+        var data;
+        try { data = unb64(B.FACTORY_AUDIO[d.audio]); } catch (e) { done(); return; }
+        A.importAudio(data).then(function (r) {
+          cfg.pages[Math.floor(k / B.SLOTS)].pads[k % B.SLOTS] = {
+            id: B.uid('p'), name: d.name[en ? 1 : 0], color: d.color, mode: d.mode, loop: !!d.loop,
+            vol: 1, sample: r.id, start: 0, end: r.buffer.duration, fadeIn: 0, fadeOut: d.fadeOut || 0
           };
-          i++;
-          if (onProgress) onProgress(i, defs.length);
-          setTimeout(next, 0);
-        }, rej);
+        })['catch'](function () {}).then(done); // un son illisible laisse sa case vide
       })();
     });
   };

@@ -842,6 +842,9 @@
           })['catch'](function (e) { idle(); toast(t('error') + (e && e.message || e), 4000); });
         });
       }));
+      var cred = [h('div', 'note', t('creditsNote'))];
+      (B.CREDITS || []).forEach(function (c) { cred.push(h('div', 'note', c)); });
+      sec.apply(null, [body, t('credits')].concat(cred));
       add(body, h('div', 'note', t('about', B.VERSION)));
     });
   }
