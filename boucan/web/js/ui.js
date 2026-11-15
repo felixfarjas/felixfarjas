@@ -78,11 +78,11 @@
   // ====================== Rendu ======================
   function buildGrid() {
     for (var i = 0; i < B.SLOTS; i++) {
-      var p = { el: h('div', 'pad'), inn: h('div', 'padIn'), prog: h('div', 'prog'), name: h('div', 'name'), tag: h('div', 'tag'), ico: h('div', 'padIco') };
+      var p = { el: h('div', 'pad'), inn: h('div', 'padIn'), prog: h('div', 'prog'), name: h('div', 'name'), tag: h('div', 'tag'), ico: h('div', 'padIco'), pl: playerDom() };
       p.el.style.left = (i % 2 * 50) + '%';
       p.el.style.top = (Math.floor(i / 2) * 25) + '%';
       p.el.setAttribute('data-i', i);
-      add(el.grid, add(p.el, add(p.inn, p.prog, p.ico, p.name, p.tag)));
+      add(el.grid, add(p.el, add(p.inn, p.prog, p.ico, p.name, p.tag, p.pl.el)));
       pads.push(p);
     }
   }
@@ -105,6 +105,21 @@
 
   function renderPad(i) {
     var p = pads[i], pad = page().pads[i], cls = 'padIn';
+    var big = !!pad && pad.type === 'player', covered = B.cover(page(), i) >= 0;
+    p.el.style.display = covered ? 'none' : '';
+    p.el.style.width = big ? '100%' : '50%';
+    p.el.style.height = big ? '50%' : '25%';
+    p.pl.el.style.display = big ? '' : 'none';
+    if (covered) return;
+    if (big) {
+      p.inn.className = cls + ' pl';
+      p.inn.style.background = ''; p.inn.style.border = ''; p.inn.style.boxShadow = '';
+      p.inn.style.backgroundColor = pad.color; p.inn.style.color = ink(pad.color);
+      p.name.textContent = ''; p.tag.textContent = ''; p.ico.innerHTML = '';
+      setProg(p, null);
+      playerPaint(p.pl);
+      return;
+    }
     if (!pad) {
       p.inn.className = cls + ' empty';
       p.inn.style.background = ''; p.inn.style.color = ''; p.inn.style.boxShadow = '';
@@ -185,6 +200,84 @@
     if (S.onVoice) S.onVoice(id);
   };
 
+  // ====================== Player ======================
+  // Bloc 2 x 2 qui pilote le lecteur de musique du téléphone (Spotify ou autre)
+  // par le natif : titre, pochette, lecture/pause, suivant, précédent, volume.
+  var PL = { st: null, art: '', artKey: null, volHold: 0 };
+  var SVG_PREV = '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M6 5h3v14H6zM20 5v14l-10-7z" fill="currentColor"/></svg>';
+  var SVG_NEXT = '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M15 5h3v14h-3zM4 5v14l10-7z" fill="currentColor"/></svg>';
+  var SVG_PLAY = '<svg viewBox="0 0 24 24" width="44" height="44"><path d="M7 4v16l13-8z" fill="currentColor"/></svg>';
+  var SVG_PAUSE = '<svg viewBox="0 0 24 24" width="44" height="44"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>';
+
+  function playerDom() {
+    var d = { el: h('div', 'player'), art: h('div', 'plArt'), title: h('div', 'plTitle'), artist: h('div', 'plArtist'),
+      prev: h('div', 'plBtn'), play: h('div', 'plBtn plPlay'), next: h('div', 'plBtn'),
+      vol: h('div', 'plVol'), fill: h('div', 'fill'), lbl: h('div', 'lbl', 'VOL'), msg: h('div', 'plMsg') };
+    d.prev.innerHTML = SVG_PREV; d.next.innerHTML = SVG_NEXT;
+    d.prev.setAttribute('data-cmd', 'prev'); d.play.setAttribute('data-cmd', 'toggle'); d.next.setAttribute('data-cmd', 'next');
+    d.msg.setAttribute('data-cmd', 'perm');
+    add(d.el, add(h('div', 'plTop'), d.art, add(h('div', 'plTxt'), d.title, d.artist)),
+      add(h('div', 'plBtns'), d.prev, d.play, d.next), add(d.vol, d.fill, d.lbl), d.msg);
+    slider(d.vol, function (v) {
+      if (S.edit || !NATIVE) return;
+      PL.volHold = Date.now() + 1500; // le temps que le téléphone suive
+      if (PL.st) PL.st.vol = v;
+      d.fill.style.width = (v * 100) + '%';
+      try { window.BoucanNative.playerVol(v); } catch (e) {}
+    });
+    return d;
+  }
+  function playerPaint(d) {
+    var st = PL.st, ok = !!(st && st.perm && st.app);
+    d.msg.style.display = ok ? 'none' : '';
+    d.msg.textContent = !NATIVE || !window.BoucanNative.playerState ? t('plNoNative') : !st || st.perm ? t('plNone') : t('plPerm');
+    d.title.textContent = ok ? st.title || st.app : '';
+    d.artist.textContent = ok ? st.artist : '';
+    d.play.innerHTML = ok && st.playing ? SVG_PAUSE : SVG_PLAY;
+    d.art.style.backgroundImage = ok && PL.art ? 'url(data:image/jpeg;base64,' + PL.art + ')' : '';
+    d.fill.style.width = ((st ? st.vol || 0 : 0) * 100) + '%';
+  }
+  function playerShown() {
+    return page().pads.some(function (p) { return p && p.type === 'player'; });
+  }
+  function playerPoll() {
+    if (!NATIVE || !window.BoucanNative.playerState || !B.cfg || document.hidden || !playerShown()) return;
+    var st, vol = PL.st ? PL.st.vol : 0;
+    try { st = JSON.parse(window.BoucanNative.playerState()); } catch (e) { return; }
+    if (Date.now() < PL.volHold) st.vol = vol;
+    var key = st.app ? st.app + '|' + st.title + '|' + st.artist : null;
+    if (key !== PL.artKey) {
+      PL.artKey = key; PL.art = '';
+      PL.artTry = key ? 3 : 0;
+    }
+    // la pochette arrive parfois un instant après le titre
+    if (PL.artTry > 0 && !PL.art) {
+      PL.artTry--;
+      try { PL.art = window.BoucanNative.playerArt() || ''; } catch (e2) {}
+    }
+    PL.st = st;
+    page().pads.forEach(function (p, i) { if (p && p.type === 'player') playerPaint(pads[i].pl); });
+  }
+  function playerTap(target) {
+    var cmd = null;
+    while (target && target !== el.grid && !cmd) { cmd = target.getAttribute && target.getAttribute('data-cmd'); target = target.parentNode; }
+    if (!cmd || !NATIVE || !window.BoucanNative.playerCmd) return;
+    buzz();
+    try { window.BoucanNative.playerCmd(cmd); } catch (e) {}
+    setTimeout(playerPoll, 350);
+    setTimeout(playerPoll, 900);
+  }
+  // Baisse (ou met en pause) la musique du téléphone pendant qu'on parle.
+  var duckT = null;
+  function duck(on, forSec) {
+    if (!NATIVE || !window.BoucanNative.duck) return;
+    if (duckT) { clearTimeout(duckT); duckT = null; }
+    var mode = B.cfg.duck === 'pause' ? 2 : B.cfg.duck === 'duck' ? 1 : 0;
+    function send(m) { try { window.BoucanNative.duck(m); } catch (e) {} }
+    if (on) { if (mode) send(mode); return; }
+    if (forSec) duckT = setTimeout(function () { duckT = null; send(0); }, forSec * 1000); else send(0);
+  }
+
   // ====================== Micro ======================
   var MIC_SVG = '<svg viewBox="0 0 24 24" width="30" height="30"><rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4" stroke="currentColor" stroke-width="2" fill="none"/></svg>';
   var BIN_SVG = '<svg viewBox="0 0 24 24" width="64" height="64"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -246,11 +339,15 @@
   }
   // Case micro : on parle tant qu'on appuie ; glisser hors de la case annule.
   function recHold(pad, i, key) {
+    duck(true);
     recBegin({
       key: key, rect: pads[i].inn.getBoundingClientRect(), color: pad.color, live: pad.micMode === 'live',
       denoise: pad.denoise, vol: pad.vol,
       done: function (pcm) {
-        if (pcm && pcm.length > A.ctx.sampleRate * 0.15) A.play(pad, undefined, A.pcmBuffer(pcm));
+        var ok = pcm && pcm.length > A.ctx.sampleRate * 0.15;
+        // la musique reste baissée jusqu'à la fin de la voix rejouée
+        duck(false, ok && pad.micMode !== 'live' ? pcm.length / A.ctx.sampleRate + 0.3 : 0);
+        if (ok) A.play(pad, undefined, A.pcmBuffer(pcm));
       }
     });
   }
@@ -261,9 +358,10 @@
   }
 
   // ====================== Jeu ======================
-  function padDown(i, key) {
+  function padDown(i, key, target) {
     var pad = page().pads[i];
     if (!pad) return;
+    if (pad.type === 'player') { playerTap(target); return; }
     var type = pad.type || 'sample';
     if (type === 'sample' && !A.buffers[pad.sample]) return;
     if (type === 'mic' && rec) return;
@@ -302,7 +400,7 @@
   function goPage(k) {
     if (k === B.cfg.cur || !B.cfg.pages[k]) return;
     B.cfg.cur = k;
-    renderGrid(); renderTabs();
+    renderGrid(); renderTabs(); playerPoll();
     B.save();
   }
 
@@ -365,7 +463,7 @@
       ev.preventDefault();
       for (var k = 0; k < ev.changedTouches.length; k++) {
         var t = ev.changedTouches[k], i = padIndex(t.target);
-        if (i >= 0) padDown(i, 't' + t.identifier);
+        if (i >= 0) padDown(i, 't' + t.identifier, t.target);
       }
     });
     function end(ev) {
@@ -386,7 +484,7 @@
       A.resume();
       if (S.edit) return;
       var i = padIndex(ev.target);
-      if (i >= 0) padDown(i, 'm');
+      if (i >= 0) padDown(i, 'm', ev.target);
     });
     on(window, 'mouseup', function () { padUp('m'); });
     on(el.grid, 'click', function (ev) {
@@ -459,7 +557,8 @@
     if (S.moving) {
       var m = S.moving, src = B.cfg.pages[m.pg];
       S.moving = null;
-      if (src && src.pads[m.i] === m.pad && !(m.pg === B.cfg.cur && m.i === i)) {
+      if (pg.pads[i] && pg.pads[i].type === 'player') { toast(t('plNoSwap')); }
+      else if (src && src.pads[m.i] === m.pad && !(m.pg === B.cfg.cur && m.i === i)) {
         src.pads[m.i] = pg.pads[i];
         pg.pads[i] = m.pad;
         B.save();
@@ -773,12 +872,42 @@
       });
       big('mic', t('typeMic'), t('noteMic'), function () { make('mic'); open(); });
       big('fx', t('typeFx'), t('noteFx'), function () { make('fx'); open(); });
+      big('player', 'PLAYER', t('notePlayer'), function () {
+        // 2 x 2 cases : la rangée de la case touchée et celle du dessous (ou du dessus)
+        var a = Math.min(4, i - i % 2), free = function (x) { return [x, x + 1, x + 2, x + 3].every(function (k) { return !pg.pads[k] && B.cover(pg, k) < 0; }); };
+        if (!free(a)) a -= 2;
+        if (a < 0 || !free(a)) { toast(t('plRoom'), 3500); return; }
+        pg.pads[a] = { id: B.uid('p'), type: 'player', name: 'PLAYER', color: '#2E7D32' };
+        B.saveNow(); sh.close(); renderAll(); playerPoll();
+      });
     });
+  }
+
+  function editPlayer(pi, i) {
+    var pg = B.cfg.pages[pi], pad = pg.pads[i];
+    sheet('PLAYER', function (body, sh) {
+      sec(body, '', h('div', 'note', t('plHelp')));
+      if (NATIVE && window.BoucanNative.playerCmd) {
+        var pb = h('button', 'btn accent', t('plAllow'));
+        on(pb, 'click', function () { window.BoucanNative.playerCmd('perm'); });
+        sec(body, t('plAccess'), pb, h('div', 'note', t('plAccessNote')));
+      }
+      sec(body, t('color'), swatches(pad.color, function (c) { pad.color = c; renderGrid(); B.save(); }));
+      sec(body, t('duckSec'), choice([['none', t('duckNone')], ['duck', t('duckDuck')], ['pause', t('duckPause')]], B.cfg.duck, function (m) {
+        B.cfg.duck = m; B.save();
+      }), h('div', 'note', t('duckNote')));
+      var clear = h('button', 'btn danger', t('clear'));
+      on(clear, 'click', function () {
+        ask(t('askClear', 'PLAYER'), t('doClear'), function () { pg.pads[i] = null; sh.close(); });
+      });
+      sec(body, t('padSec'), clear);
+    }, function () { B.saveNow(); renderAll(); });
   }
 
   function editPad(pi, i) {
     var pg = B.cfg.pages[pi], pad = pg.pads[i];
     if (!pad) return;
+    if (pad.type === 'player') { editPlayer(pi, i); return; }
     var type = pad.type || 'sample';
     var pausedAt = null, raf = null, wave = null, playLbl, playIco, times = function () {};
     function show() { if (pi === B.cfg.cur) renderPad(i); B.save(); }
@@ -1117,7 +1246,6 @@
           busy(t('importingCfg'));
           B.applyImport(parsed).then(function () {
             B.lang = B.cfg.lang; tellLang();
-            A.setTarget(B.cfg.fxTarget, B.cfg.fxGlobal);
             A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
             closeSheets();
             S.edit = false; S.moving = null;
@@ -1179,28 +1307,6 @@
       });
       sec(body, t('fxList'), fxBox, h('div', 'note', t('fxNote')));
 
-      // Sur quoi agissent les effets : Boucan, le son des autres applis, ou tout.
-      var tgNote = h('div', 'note'), tgHelp = h('div', 'note', t('tgHelp')), tgMeth = h('div');
-      var tgPaint = function () {
-        var n = A.nat, on = B.cfg.fxTarget !== 'boucan';
-        tgMeth.style.display = on && n.mode !== 'none' ? '' : 'none';
-        tgHelp.style.display = on ? '' : 'none';
-        tgNote.style.display = on || n.mode === 'none' ? '' : 'none';
-        tgNote.textContent = n.mode === 'session' ? t('tgSession', n.apps || '?') : n.mode === 'global' ? t('tgGlobal') :
-          n.mode === 'none' ? t('tgNone') : n.mode === 'fail' ? t('tgFail') + (n.err ? ' (' + n.err + ')' : '') : '';
-      };
-      S.onNat = tgPaint;
-      add(tgMeth, choice([['auto', t('tgAuto')], ['global', t('tgForce')]], B.cfg.fxGlobal ? 'global' : 'auto', function (m) {
-        B.cfg.fxGlobal = m === 'global';
-        A.setTarget(B.cfg.fxTarget, B.cfg.fxGlobal); tgPaint(); B.save();
-      }));
-      tgMeth.style.marginTop = '8px';
-      tgPaint();
-      sec(body, t('fxTarget'), choice([['boucan', 'BOUCAN'], ['phone', t('tgPhone')], ['all', t('tgAll')]], B.cfg.fxTarget, function (g) {
-        B.cfg.fxTarget = g;
-        A.setTarget(g, B.cfg.fxGlobal); tgPaint(); B.save();
-      }), tgMeth, tgNote, tgHelp);
-
       sec(body, t('lang'), choice(B.LANGS, B.lang, function (l) {
         B.lang = B.cfg.lang = l;
         B.save(); tellLang();
@@ -1215,7 +1321,6 @@
       sec(body, t('reset'), btn(t('resetBtn'), 'danger', function () {
         ask(t('askReset'), t('doReset'), function () {
           factoryReset().then(function () {
-            A.setTarget(B.cfg.fxTarget, B.cfg.fxGlobal);
             A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
             closeSheets();
             S.edit = false;
@@ -1225,16 +1330,10 @@
         });
       }));
       add(body, h('div', 'note', t('about', B.VERSION)));
-    }, function () { S.onNat = null; });
+    });
   }
 
   // ====================== Ponts natifs (Android) ======================
-  // Le natif a appris qu'une appli a ouvert ou fermé sa sortie audio.
-  B.natChanged = function () {
-    if (!B.cfg) return;
-    A.setTarget(B.cfg.fxTarget, B.cfg.fxGlobal);
-    if (S.onNat) S.onNat();
-  };
   B.nativeMsg = function (key) { idle(); if (key) toast(t('n.' + key), 3000); };
   // Bouton retour : vrai si l'app a consommé l'appui.
   B.back = function () {
@@ -1267,11 +1366,12 @@
     }).then(function () {
       bindPlay();
       tellLang();
-      A.setTarget(B.cfg.fxTarget, B.cfg.fxGlobal);
-            A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
+      A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
       renderAll();
       idle();
       if (B.volatile) toast(t('noStore'), 6000);
+      setInterval(playerPoll, 1000);
+      on(document, 'visibilitychange', playerPoll);
       return loadBuffers();
     })['catch'](function (e) {
       fatal(t('bootFail') + (e && e.message || e));

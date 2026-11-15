@@ -25,21 +25,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Un lecteur de musique peut ouvrir Boucan comme égaliseur : il lui donne alors sa session audio. -->
-            <intent-filter>
-                <action android:name="android.media.action.DISPLAY_AUDIO_EFFECT_CONTROL_PANEL" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.CATEGORY_CONTENT_MUSIC" />
-            </intent-filter>
         </activity>
 
-        <!-- Sessions audio annoncées par les lecteurs de musique (pour leur appliquer les effets). -->
-        <receiver android:name=".SessionReceiver" android:exported="true">
+        <!-- Requis par Android pour voir et piloter le lecteur de musique en cours (case PLAYER). -->
+        <service
+            android:name=".MediaListener"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
-                <action android:name="android.media.action.OPEN_AUDIO_EFFECT_CONTROL_SESSION" />
-                <action android:name="android.media.action.CLOSE_AUDIO_EFFECT_CONTROL_SESSION" />
+                <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
-        </receiver>
+        </service>
 
         <!-- Sert le fichier .boucan exporté aux apps de partage (WhatsApp, Bluetooth…). -->
         <provider

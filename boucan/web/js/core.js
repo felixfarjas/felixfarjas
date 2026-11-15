@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '1.3';
+  B.VERSION = '1.4';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -30,7 +30,15 @@
     lowcut: ['amount', 'sweep'], gate: ['rate', 'depth'], cut: ['fade']
   };
   B.PAD_FX_DEF = { brake: [0.55], reverb: [1], echo: [0.6, 0.8], highcut: [1, 0.26], lowcut: [1, 0.26], gate: [0.54, 1], cut: [0] };
-  B.TARGETS = ['boucan', 'phone', 'all'];
+  B.DUCKS = ['none', 'duck', 'pause'];
+  // Une case PLAYER occupe 2 x 2 cases. Renvoie la case d'ancrage du player
+  // qui recouvre la case i, ou -1.
+  B.cover = function (pg, i) {
+    for (var a = i - 3; a < i; a++) {
+      if (a >= 0 && a % 2 === 0 && pg.pads[a] && pg.pads[a].type === 'player') return a;
+    }
+    return -1;
+  };
   // Valeurs réelles d'une case FX, d'après ses curseurs.
   B.padFxVal = function (pad) {
     var d = B.PAD_FX_DEF[pad.fx] || [0, 0], f = pad.fx;
@@ -310,14 +318,6 @@
   // l'effet est radical, comme sur une table de DJ.
   A.fx = { type: 'reverb', amt: 0 };
   A.fxPads = {}; // id de case -> valeurs de l'effet (B.padFxVal)
-  // Cible des effets : 'boucan' (les sons de l'app), 'phone' (le son des autres
-  // applis, traité par le natif Android) ou 'all'. A.nat décrit ce que le natif
-  // sait faire : mode 'session' (une appli précise), 'global' (toute la sortie
-  // du téléphone, Boucan compris), 'off' ou 'fail'.
-  A.target = 'boucan';
-  A.nat = { mode: 'off' };
-
-  function natOn() { return A.target !== 'boucan' && (A.nat.mode === 'session' || A.nat.mode === 'global'); }
 
   // tc : temps de réponse général ; ftc : celui des filtres et du cut.
   function applyFx(tc, ftc) {
@@ -334,15 +334,6 @@
     var rev = on('reverb'), ech = on('echo'), hc = on('highcut'), lc = on('lowcut');
     var meg = on('mega'), dis = on('disto'), fla = on('flanger'), gat = on('gate'), cut = on('cut') ? 1 : 0;
     var hz = P.gate ? P.gate.hz : 7;
-
-    if (natOn()) {
-      try {
-        window.BoucanNative.phoneFx(hc, lc, rev, gat > 0 ? hz : 0, gat, !!cut, P.brake ? Math.round(P.brake.time * 1000) : 0, Math.round(ftc * 1000));
-      } catch (e) {}
-      if (A.target === 'phone') rev = ech = hc = lc = meg = dis = fla = gat = cut = 0;
-      // en mode global le natif traite déjà toute la sortie : pas de double dose
-      else if (A.nat.mode === 'global') rev = hc = lc = gat = cut = 0;
-    }
 
     A.fxEcho = ech;
     A.fxFb = P.echo ? P.echo.fb : 0.35 + 0.5 * ech;
@@ -372,19 +363,6 @@
     applyFx(0.03);
   };
 
-  // Change la cible des effets ; le natif (Android) prépare ou libère les siens.
-  A.setTarget = function (target, global) {
-    var N = window.BoucanNative, nat = { mode: 'off' };
-    if (A.braked) brake(false);
-    if (N && N.phoneFxSetup) {
-      try { nat = JSON.parse(N.phoneFxSetup(target !== 'boucan', !!global)); } catch (e) { nat = { mode: 'fail', err: String(e) }; }
-    } else nat = { mode: 'none' };
-    A.target = target;
-    A.nat = nat;
-    if (A.ctx) applyFx(0.03);
-    return nat;
-  };
-
   // Vinyl stop : toutes les voix ralentissent jusqu'à l'arrêt, puis repartent.
   function brake(on, time) {
     var t = A.ctx.currentTime, id;
@@ -406,7 +384,6 @@
     if (on) { unkill(); A.fxPads[id] = B.padFxVal(pad); } else delete A.fxPads[id];
     var k, braking = null;
     for (k in A.fxPads) if (A.fxPads[k].type === 'brake') braking = A.fxPads[k];
-    if (natOn() && A.target === 'phone') braking = null; // le natif s'en charge
     if (!!braking !== !!A.braked) brake(!!braking, braking && braking.time);
     // les filtres balaient, le reste claque
     var f = on ? A.fxPads[id] : had;
@@ -584,14 +561,15 @@
       tool('fx', 'brake', 'VINYL STOP', 'VINYL STOP', '#FDD835'), tool('fx', 'reverb', 'REVERB', 'REVERB', '#43A047')] },
     { name: ['MIX', 'MIX'], color: '#8E24AA', pads: ['techno', 'drop', 'badumtss', 'tromboneTriste',
       tool('mic', 'after', 'MICRO', 'MIC', '#E53935'), tool('fx', 'echo', 'ÉCHO', 'ECHO', '#00ACC1'),
-      tool('fx', 'gate', 'HACHOIR', 'CHOPPER', '#8E24AA'), tool('fx', 'cut', 'CUT', 'CUT', '#EC407A')] }
+      tool('fx', 'gate', 'HACHOIR', 'CHOPPER', '#8E24AA'), tool('fx', 'cut', 'CUT', 'CUT', '#EC407A')] },
+    { name: ['MUSIQUE', 'MUSIC'], color: '#43A047', pads: [tool('player', '', 'PLAYER', 'PLAYER', '#2E7D32')] }
   ];
 
   // Premier lancement / remise à zéro : synthétise les sons et les stocke
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), fxTarget: 'boucan', fxGlobal: false,
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck',
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -599,7 +577,7 @@
         if (typeof d === 'string') { jobs.push({ page: page, k: k, def: B.FACTORY[d] }); return; }
         var p = page.pads[k] = { id: B.uid('p'), type: d.type, name: d.name[en], color: d.color };
         if (d.type === 'mic') { p.micMode = d.micMode; p.denoise = 0.5; p.vol = 1; }
-        else { p.fx = d.fx; p.mode = 'gate'; }
+        else if (d.type === 'fx') { p.fx = d.fx; p.mode = 'gate'; }
       });
       cfg.pages.push(page);
     });
@@ -640,8 +618,7 @@
       if (cfg.fxList.indexOf(ty) >= 0) { cfg.fx.type = ty; cfg.fx.amt = num(raw.fx.amt, 0, 0, 1); }
     }
     cfg.vibrate = raw.vibrate !== false;
-    cfg.fxTarget = B.TARGETS.indexOf(raw.fxTarget) >= 0 ? raw.fxTarget : 'boucan';
-    cfg.fxGlobal = !!raw.fxGlobal;
+    cfg.duck = B.DUCKS.indexOf(raw.duck) >= 0 ? raw.duck : 'duck';
     (raw.pages instanceof Array ? raw.pages : []).slice(0, B.MAX_PAGES).forEach(function (pg, k) {
       var page = B.newPage(k + 1);
       if (pg && typeof pg === 'object') {
@@ -650,7 +627,10 @@
         (pg.pads instanceof Array ? pg.pads : []).slice(0, B.SLOTS).forEach(function (p, i) {
           if (!p || typeof p !== 'object') return;
           var base = { id: B.uid('p'), type: 'sample', name: str(p.name, '', 24), color: color(p.color, B.COLORS[i % B.COLORS.length]) };
-          if (p.type === 'mic') {
+          if (p.type === 'player') {
+            if (i % 2 || i > 4) return;
+            base.type = 'player';
+          } else if (p.type === 'mic') {
             base.type = 'mic';
             base.micMode = p.micMode === 'live' ? 'live' : 'after';
             base.denoise = num(p.denoise, 0.5, 0, 1);
@@ -679,6 +659,8 @@
           }
           page.pads[i] = base;
         });
+        // un player recouvre 2 x 2 cases
+        page.pads.forEach(function (p, i) { if (p && B.cover(page, i) >= 0) page.pads[i] = null; });
       }
       cfg.pages.push(page);
     });

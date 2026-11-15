@@ -5,8 +5,13 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
-import android.content.IntentFilter;
-import android.media.audiofx.AudioEffect;
+import android.content.ComponentName;
+import android.graphics.Bitmap;
+import android.media.MediaMetadata;
+import android.media.session.MediaController;
+import android.media.session.MediaSessionManager;
+import android.media.session.PlaybackState;
+import android.provider.Settings;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -36,6 +41,7 @@ import android.widget.Toast;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -43,6 +49,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.List;
 
 /**
  * Boucan : une WebView plein écran qui affiche l'app embarquée dans les assets.
@@ -66,8 +73,13 @@ public class MainActivity extends Activity {
     private PermissionRequest micRequest;
     private volatile boolean french = true;
     private Vibrator vibrator;
-    private PhoneFx phoneFx; // effets sur le son des autres applis (Android 9+)
-    private final SessionReceiver sessions = new SessionReceiver();
+    private AudioManager audio;
+    private int focusMode; // 0 rien, 1 musique baissée, 2 musique en pause
+    private final AudioManager.OnAudioFocusChangeListener focusListener = new AudioManager.OnAudioFocusChangeListener() {
+        @Override
+        public void onAudioFocusChange(int change) {
+        }
+    };
 
     @Override
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
@@ -77,25 +89,7 @@ public class MainActivity extends Activity {
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
         vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
 
-        if (Build.VERSION.SDK_INT >= 28) phoneFx = new PhoneFx(this);
-        // Les lecteurs de musique annoncent leur session audio : on écoute aussi
-        // tant que l'app tourne (le manifeste, lui, écoute quand elle est fermée).
-        IntentFilter f = new IntentFilter(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION);
-        f.addAction(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(sessions, f, RECEIVER_EXPORTED);
-        else registerReceiver(sessions, f);
-        SessionReceiver.listener = new Runnable() {
-            @Override
-            public void run() {
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (web != null) web.evaluateJavascript("window.Boucan&&Boucan.natChanged&&Boucan.natChanged()", null);
-                    }
-                });
-            }
-        };
-        equalizerIntent(getIntent());
+        audio = (AudioManager) getSystemService(AUDIO_SERVICE);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -149,19 +143,6 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        equalizerIntent(intent);
-    }
-
-    /** Un lecteur ouvre Boucan comme « égaliseur » : il donne sa session audio. */
-    private void equalizerIntent(Intent intent) {
-        if (intent == null || !AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL.equals(intent.getAction())) return;
-        SessionReceiver.note(this, intent);
-        setResult(RESULT_OK);
-    }
-
-    @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
@@ -191,12 +172,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        SessionReceiver.listener = null;
-        try {
-            unregisterReceiver(sessions);
-        } catch (RuntimeException ignored) {
-        }
-        if (phoneFx != null) phoneFx.release();
+        focus(0);
         closeExport();
         if (web != null) {
             root.removeView(web);
@@ -392,6 +368,38 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ----------------------------------------------------- Lecteur de musique
+
+    /** Le lecteur à piloter : celui qui joue, sinon le plus récent. Lève SecurityException sans l'accès aux notifications. */
+    private MediaController controller() {
+        MediaSessionManager msm = (MediaSessionManager) getSystemService(MEDIA_SESSION_SERVICE);
+        List<MediaController> list = msm.getActiveSessions(new ComponentName(this, MediaListener.class));
+        MediaController first = null;
+        for (MediaController c : list) {
+            if (getPackageName().equals(c.getPackageName())) continue;
+            PlaybackState st = c.getPlaybackState();
+            if (st != null && st.getState() == PlaybackState.STATE_PLAYING) return c;
+            if (first == null) first = c;
+        }
+        return first;
+    }
+
+    /** Demande à Android de baisser (1) ou de mettre en pause (2) les autres applis ; 0 leur rend la main. */
+    @SuppressWarnings("deprecation")
+    private void focus(int mode) {
+        if (audio == null || mode == focusMode) return;
+        try {
+            if (focusMode != 0) audio.abandonAudioFocus(focusListener);
+            focusMode = 0;
+            if (mode != 0) {
+                audio.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC,
+                        mode == 2 ? AudioManager.AUDIOFOCUS_GAIN_TRANSIENT : AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK);
+                focusMode = mode;
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     /** Appelé depuis la page : le fichier arrive par morceaux en base64. */
     private final class Bridge {
         @JavascriptInterface
@@ -408,24 +416,104 @@ public class MainActivity extends Activity {
             }
         }
 
-        /** Prépare ou libère les effets sur le son des autres applis ; renvoie l'état en JSON. */
+        /** État du lecteur de musique en cours (Spotify ou autre), en JSON. */
         @JavascriptInterface
-        public String phoneFxSetup(boolean on, boolean forceGlobal) {
-            if (phoneFx == null) return "{\"mode\":\"none\"}";
+        public String playerState() {
+            JSONObject o = new JSONObject();
             try {
-                return phoneFx.setup(on, forceGlobal);
+                int max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                o.put("vol", max > 0 ? audio.getStreamVolume(AudioManager.STREAM_MUSIC) / (double) max : 0);
+                o.put("perm", true);
+                MediaController c = controller();
+                if (c != null) {
+                    MediaMetadata m = c.getMetadata();
+                    PlaybackState st = c.getPlaybackState();
+                    String title = m == null ? null : m.getString(MediaMetadata.METADATA_KEY_TITLE);
+                    String artist = m == null ? null : m.getString(MediaMetadata.METADATA_KEY_ARTIST);
+                    o.put("app", c.getPackageName());
+                    o.put("title", title == null ? "" : title);
+                    o.put("artist", artist == null ? "" : artist);
+                    o.put("playing", st != null && st.getState() == PlaybackState.STATE_PLAYING);
+                }
+            } catch (SecurityException e) {
+                try {
+                    o.put("perm", false);
+                } catch (Exception ignored) {
+                }
+            } catch (Exception ignored) {
+            }
+            return o.toString();
+        }
+
+        /** Pochette du morceau en cours : JPEG en base64, ou "". */
+        @JavascriptInterface
+        public String playerArt() {
+            try {
+                MediaController c = controller();
+                MediaMetadata m = c == null ? null : c.getMetadata();
+                if (m == null) return "";
+                Bitmap b = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+                if (b == null) b = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
+                if (b == null) b = m.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON);
+                if (b == null) return "";
+                int side = Math.max(b.getWidth(), b.getHeight());
+                if (side > 320) {
+                    b = Bitmap.createScaledBitmap(b, Math.max(1, b.getWidth() * 320 / side), Math.max(1, b.getHeight() * 320 / side), true);
+                }
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                b.compress(Bitmap.CompressFormat.JPEG, 82, out);
+                return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
             } catch (Throwable e) {
-                return "{\"mode\":\"fail\"}";
+                return "";
             }
         }
 
+        /** toggle, next, prev ; "perm" ouvre le réglage Android d'accès aux notifications. */
         @JavascriptInterface
-        public void phoneFx(float hc, float lc, float rev, float gateHz, float gateDepth, boolean kill, int brakeMs, int sweepMs) {
-            if (phoneFx == null) return;
+        public void playerCmd(final String cmd) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if ("perm".equals(cmd)) {
+                            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+                            return;
+                        }
+                        MediaController c = controller();
+                        if (c == null) return;
+                        MediaController.TransportControls t = c.getTransportControls();
+                        if ("next".equals(cmd)) t.skipToNext();
+                        else if ("prev".equals(cmd)) t.skipToPrevious();
+                        else {
+                            PlaybackState st = c.getPlaybackState();
+                            if (st != null && st.getState() == PlaybackState.STATE_PLAYING) t.pause();
+                            else t.play();
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+        }
+
+        /** Volume média du téléphone, de 0 à 1. */
+        @JavascriptInterface
+        public void playerVol(float v) {
             try {
-                phoneFx.set(hc, lc, rev, gateHz, gateDepth, kill, brakeMs, sweepMs);
-            } catch (Throwable ignored) {
+                int max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                audio.setStreamVolume(AudioManager.STREAM_MUSIC, Math.max(0, Math.min(max, Math.round(v * max))), 0);
+            } catch (Exception ignored) {
             }
+        }
+
+        /** 0 : rend la main ; 1 : les autres applis baissent leur son ; 2 : elles se mettent en pause. */
+        @JavascriptInterface
+        public void duck(final int mode) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    focus(mode);
+                }
+            });
         }
 
         @JavascriptInterface

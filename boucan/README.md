@@ -12,12 +12,12 @@ Soundboard Android ultra simple, pensé pour être joué d'une main, à vélo, e
 - **ÉDIT** (appui long) pour tout régler ; interface en français ou en anglais.
 - **Export / import** de toute la config (pages, réglages et sons) dans un seul fichier `.boucan`.
 - Sons d'origine : 16 sons synthétisés dans l'app (aucun fichier audio embarqué), répartis sur 3 pages avec le micro et les effets DJ.
-- Les effets peuvent aussi agir sur le son des autres applis (Spotify…) : MENU, « Les effets agissent sur ». Android 9 minimum ; Boucan se branche sur la session audio du lecteur quand il l'annonce, sinon sur toute la sortie du téléphone (`PhoneFx.java`).
+- Case PLAYER (2 × 2) : pilote le lecteur de musique du téléphone (Spotify ou autre) — titre, pochette, lecture/pause, suivant/précédent, volume. Demande l'« accès aux notifications » d'Android. Les effets ne s'appliquent pas à cette musique (flux d'une autre appli) ; en revanche la musique peut baisser ou se mettre en pause quand on parle au micro.
 - Pas d'accès Internet, fonctionne hors ligne. Android 5.0 et plus.
 
 ## Installer
 
-Télécharger `dist/Boucan-1.3.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
+Télécharger `dist/Boucan-1.4.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
 depuis cette source quand Android le demande.
 
 ## Organisation
