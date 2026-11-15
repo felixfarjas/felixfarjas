@@ -280,6 +280,7 @@
   function playerPoll() {
     if (!B.cfg || document.hidden) return;
     if (shown('deck')) deckPaintAll();
+    B.deck.pump(); // ondes d'avance, quand rien ne joue
     if (!NATIVE || !window.BoucanNative.playerState || !shown('player')) return;
     var st;
     try { st = JSON.parse(window.BoucanNative.playerState()); } catch (e) { return; }
@@ -1867,6 +1868,22 @@
       function ehLbl() { eh.textContent = t(B.cfg.editHold ? 'editHoldOn' : 'editHoldOff'); eh.className = 'btn gap' + (B.cfg.editHold ? ' on' : ''); }
       ehLbl();
       sec(body, t('settings'), vib, swp, eh);
+
+      // Audio : tampon et fréquence, propres à ce téléphone (hors config exportée).
+      var ap = B.audioPrefs(), setAudio = function (k, v) {
+        ap[k] = v;
+        if (!B.setAudioPrefs(ap)) { toast(t('saveFail')); return; }
+        // le moteur audio se recrée au redémarrage de la page
+        busy(t('auRestart'));
+        A.stopAll();
+        B.saveNow().then(function () { setTimeout(function () { window.location.reload(); }, 300); });
+      };
+      var latRow = choice([['low', t('au.low')], ['mid', t('au.mid')], ['high', t('au.high')]], ap.lat, function (v) { setAudio('lat', v); });
+      var srRow = choice(B.RATES.map(function (r) { return [r, r ? (r / 1000) + ' k' : 'AUTO']; }), ap.sr, function (v) { setAudio('sr', v); });
+      latRow.className = srRow.className = 'row tight';
+      var lat = A.ctx.baseLatency ? ', ' + Math.round(((A.ctx.baseLatency || 0) + (A.ctx.outputLatency || 0)) * 1000) + ' ms' : '';
+      sec(body, t('auLat'), latRow, h('div', 'note', t('auLatNote')));
+      sec(body, t('auRate'), srRow, h('div', 'note', t('auRateNote', A.ctx.sampleRate + ' Hz' + lat)));
 
       sec(body, t('reset'), btn(t('resetBtn'), 'danger', function () {
         ask(t('askReset'), t('doReset'), function () {

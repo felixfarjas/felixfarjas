@@ -238,6 +238,8 @@
         var t = null, k;
         function todo(x) { return x && !have[waveKey(x)] && !bad[x.id]; }
         if (todo(D.track)) t = D.track;
+        // les ondes d'avance attendent le silence : décoder pendant la lecture fait craquer un téléphone lent
+        if (!t && (D.playing() || Object.keys(A.voices).length)) return;
         for (k = 0; !t && k < D.queue.length && k < WAVE_AHEAD; k++) if (todo(D.queue[k])) t = D.queue[k];
         if (!t) return;
         waveBusy = true;
@@ -327,12 +329,19 @@
     }
     if (up && au.paused) { try { au.playbackRate = 0.07; } catch (e2) {} }
     braked = !up;
+    // le volume accompagne le mouvement : il s'éteint sur la fin du freinage
+    // (pas d'arrêt abrupt) et revient en douceur au redémarrage
+    try {
+      var now = A.ctx.currentTime, cur = A.freeze(gain.gain, now);
+      if (up) A.fade(gain.gain, au.paused ? 0 : cur, vol(), now, Math.min(0.2, sec));
+      else A.fade(gain.gain, cur, 0, now + sec * 0.45, sec * 0.55);
+    } catch (e4) {}
     if (up) { p = au.play(); if (p && p['catch']) p['catch'](function () {}); }
     var t0 = Date.now(), from = au.playbackRate, dur = sec * 1000;
     rateT = setInterval(function () {
       var k = Math.min(1, (Date.now() - t0) / dur), r = from + ((up ? rateK : 0.07) - from) * k;
       try { au.playbackRate = Math.max(0.07, r); } catch (e3) {}
-      if (k >= 1) { clearInterval(rateT); rateT = null; if (!up) { au.pause(); braked = false; emit(); } }
+      if (k >= 1) { clearInterval(rateT); rateT = null; if (!up) { au.pause(); braked = false; glide(0); emit(); } }
     }, 30);
     emit();
   }

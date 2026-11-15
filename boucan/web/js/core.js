@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '1.8';
+  B.VERSION = '1.9';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -282,9 +282,27 @@
    *   mix -> reverb -> sortie                   mix -> écho -> sortie
    * sortie -> coupure (STOP) -> limiteur -> haut-parleur
    */
+  B.LATS = ['low', 'mid', 'high'];
+  B.RATES = [0, 44100, 32000, 22050];
+  B.audioPrefs = function () {
+    var p = {};
+    try { p = JSON.parse(window.localStorage.getItem('boucan.audio') || '{}') || {}; } catch (e) {}
+    return { lat: B.LATS.indexOf(p.lat) >= 0 ? p.lat : 'low', sr: B.RATES.indexOf(p.sr) >= 0 ? p.sr : 0 };
+  };
+  B.setAudioPrefs = function (p) {
+    try { window.localStorage.setItem('boucan.audio', JSON.stringify(p)); return true; } catch (e) { return false; }
+  };
+
   A.init = function () {
     var AC = window.AudioContext || window.webkitAudioContext, ctx;
-    try { ctx = new AC({ latencyHint: 'interactive' }); } catch (e) { ctx = new AC(); }
+    // Réglages audio de ce téléphone (menu) : taille du tampon et fréquence
+    // d'échantillonnage. Un tampon plus grand ou une fréquence plus basse
+    // évitent les craquements sur un téléphone lent, au prix de la réactivité.
+    var pf = B.audioPrefs(), opt = { latencyHint: pf.lat === 'high' ? 'playback' : pf.lat === 'mid' ? 0.07 : 'interactive' };
+    if (pf.sr) opt.sampleRate = pf.sr;
+    try { ctx = new AC(opt); } catch (e) {
+      try { ctx = new AC({ latencyHint: opt.latencyHint }); } catch (e2) { ctx = new AC(); }
+    }
     A.ctx = ctx;
     function gain(v) { var g = ctx.createGain(); g.gain.value = v; return g; }
     function filter(type, f, q) {
@@ -326,12 +344,15 @@
 
     fxIn.connect(cutG); cutG.connect(hp); hp.connect(lp);
     lp.connect(clean); clean.connect(mix);
-    lp.connect(mHp); mHp.connect(mLp); mLp.connect(mSh); mSh.connect(mega); mega.connect(mix);
-    lp.connect(dSh); dSh.connect(disto); disto.connect(mix);
+    // Reverb, mégaphone et disto coûtent cher : ils ne sont branchés que
+    // lorsqu'ils servent (voir link), sinon ils tourneraient pour rien.
+    A.links = { rev: [revSend, conv, 6000], mega: [lp, mHp, 300], disto: [lp, dSh, 300] };
+    mHp.connect(mLp); mLp.connect(mSh); mSh.connect(mega); mega.connect(mix);
+    dSh.connect(disto); disto.connect(mix);
     mix.connect(dry); dry.connect(trem);
     mix.connect(fl); fl.connect(flWet); flWet.connect(trem); fl.connect(flFb); flFb.connect(fl);
     trem.connect(pre);
-    mix.connect(revSend); revSend.connect(conv); conv.connect(pre);
+    mix.connect(revSend); conv.connect(pre);
     mix.connect(eSend); eSend.connect(delay); delay.connect(eLp); eLp.connect(fb); fb.connect(delay); eLp.connect(pre);
     kill.connect(comp); comp.connect(ctx.destination);
 
@@ -392,6 +413,20 @@
   A.fx = { type: 'reverb', amt: 0 };
   A.fxPads = {}; // id de case -> valeurs de l'effet (B.padFxVal)
 
+  // Branche un étage coûteux quand il sert, le débranche une fois sa queue éteinte.
+  function link(key, on) {
+    var L = A.links[key];
+    if (on) {
+      if (L.t) { clearTimeout(L.t); L.t = null; }
+      if (!L.on) { L[0].connect(L[1]); L.on = true; }
+    } else if (L.on && !L.t) {
+      L.t = setTimeout(function () {
+        L.t = null;
+        try { L[0].disconnect(L[1]); L.on = false; } catch (e) {} // vieux moteurs : on laisse branché
+      }, L[2]);
+    }
+  }
+
   // tc : temps de réponse général ; ftc : celui des filtres et du cut.
   function applyFx(tc, ftc) {
     var t = A.ctx.currentTime, amt = {}, P = {}, id;
@@ -410,6 +445,7 @@
     var pk = P.pitch ? Math.pow(2, P.pitch.st / 12) : 1;
     if (pk !== A.pitchK) { A.pitchK = pk; retune(); }
 
+    link('rev', rev > 0.001); link('mega', meg > 0.001); link('disto', dis > 0.001);
     A.fxEcho = ech;
     A.fxFb = P.echo ? P.echo.fb : 0.35 + 0.5 * ech;
     // reverb : le son direct s'efface et s'assourdit, il ne reste presque que la queue
