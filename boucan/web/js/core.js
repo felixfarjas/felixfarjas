@@ -25,17 +25,23 @@
   var db = null;
   var D = B.db = {};
 
+  // Si IndexedDB est indisponible, l'app tourne quand même : tout reste en
+  // mémoire (B.volatile) et sera perdu à la fermeture.
+  var mem = null;
+  function useMem(res) { mem = { kv: {}, samples: {} }; B.volatile = true; res(); }
+
   D.open = function () {
-    return new Promise(function (res, rej) {
+    return new Promise(function (res) {
       var rq;
-      try { rq = window.indexedDB.open('boucan', 1); } catch (e) { rej(e); return; }
+      try { rq = window.indexedDB.open('boucan', 1); } catch (e) { useMem(res); return; }
       rq.onupgradeneeded = function () {
         var d = rq.result;
         if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
         if (!d.objectStoreNames.contains('samples')) d.createObjectStore('samples');
       };
       rq.onsuccess = function () { db = rq.result; res(); };
-      rq.onerror = function () { rej(rq.error); };
+      rq.onerror = function (ev) { if (ev && ev.preventDefault) ev.preventDefault(); useMem(res); };
+      rq.onblocked = function () { useMem(res); };
     });
   };
   function tx(store, mode, fn) {
@@ -46,11 +52,24 @@
       t.onerror = t.onabort = function () { rej(t.error || new Error('idb')); };
     });
   }
-  D.get = function (store, key) { return tx(store, 'readonly', function (s) { return s.get(key); }); };
-  D.put = function (store, key, val) { return tx(store, 'readwrite', function (s) { return s.put(val, key); }); };
-  D.del = function (store, key) { return tx(store, 'readwrite', function (s) { return s['delete'](key); }); };
-  D.clear = function (store) { return tx(store, 'readwrite', function (s) { return s.clear(); }); };
+  D.get = function (store, key) {
+    if (mem) return Promise.resolve(mem[store][key]);
+    return tx(store, 'readonly', function (s) { return s.get(key); });
+  };
+  D.put = function (store, key, val) {
+    if (mem) { mem[store][key] = val; return Promise.resolve(); }
+    return tx(store, 'readwrite', function (s) { return s.put(val, key); });
+  };
+  D.del = function (store, key) {
+    if (mem) { delete mem[store][key]; return Promise.resolve(); }
+    return tx(store, 'readwrite', function (s) { return s['delete'](key); });
+  };
+  D.clear = function (store) {
+    if (mem) { mem[store] = {}; return Promise.resolve(); }
+    return tx(store, 'readwrite', function (s) { return s.clear(); });
+  };
   D.keys = function (store) {
+    if (mem) return Promise.resolve(Object.keys(mem[store]));
     return new Promise(function (res, rej) {
       var out = [], s = db.transaction(store, 'readonly').objectStore(store), rq;
       if (s.getAllKeys) {

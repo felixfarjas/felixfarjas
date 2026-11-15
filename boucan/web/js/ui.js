@@ -806,6 +806,7 @@
       A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
       renderAll();
       idle();
+      if (B.volatile) toast('Stockage indisponible : rien ne sera gardé à la fermeture', 6000);
       return loadBuffers();
     })['catch'](function (e) {
       fatal('Erreur au démarrage : ' + (e && e.message || e));

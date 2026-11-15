@@ -29,13 +29,14 @@ depuis cette source quand Android le demande.
 
 ## Compiler
 
-Il faut un JDK 17+ et le SDK Android (plateforme 35).
+Il faut un JDK 17+ et le SDK Android (plateforme 35, build-tools 35).
 
 ```sh
-cd android
-echo "sdk.dir=/chemin/vers/android-sdk" > local.properties
-./gradlew assembleRelease
-# APK : app/build/outputs/apk/release/app-release.apk
+# Sans Gradle, aucune dépendance à télécharger : produit dist/Boucan-<version>.apk
+ANDROID_HOME=/chemin/vers/android-sdk android/build.sh
+
+# Ou avec Gradle / Android Studio (ouvrir le dossier android/)
+cd android && echo "sdk.dir=/chemin/vers/android-sdk" > local.properties && gradle assembleRelease
 ```
 
 L'APK est signé avec `android/boucan-sideload.keystore`. Cette clé est **publique** (elle est dans le dépôt) :
