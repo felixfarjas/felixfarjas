@@ -7,6 +7,8 @@ import android.content.ClipData;
 import android.content.Intent;
 import android.content.ComponentName;
 import android.content.ContentUris;
+import android.content.ContentValues;
+import android.webkit.MimeTypeMap;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.provider.MediaStore;
@@ -76,6 +78,9 @@ public class MainActivity extends Activity {
     private static final int REQ_MUSIC = 4;
     /** Adresse fictive sous laquelle la page lit les fichiers de musique du téléphone. */
     private static final String MUSIC_HOST = "boucan.music";
+    private Uri musicInUri;
+    private OutputStream musicInOut;
+    private boolean musicInFailed;
 
     private FrameLayout root;
     private WebView web;
@@ -411,7 +416,8 @@ public class MainActivity extends Activity {
         try {
             c = getContentResolver().query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, new String[]{
                     MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
-                    MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DATA, MediaStore.Audio.Media.TRACK
+                    MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DATA, MediaStore.Audio.Media.TRACK,
+                    MediaStore.Audio.Media.DISPLAY_NAME, MediaStore.Audio.Media.SIZE
             }, MediaStore.Audio.Media.IS_MUSIC + " != 0", null, null);
             while (c != null && c.moveToNext()) {
                 JSONObject o = new JSONObject();
@@ -423,6 +429,8 @@ public class MainActivity extends Activity {
                 o.put("al", c.getString(3) == null ? "" : c.getString(3));
                 o.put("p", dir);
                 o.put("n", c.getInt(5));
+                o.put("f", c.getString(6) == null ? "" : c.getString(6));
+                o.put("z", c.getLong(7));
                 out.put(o);
             }
         } catch (Exception ignored) {
@@ -430,6 +438,20 @@ public class MainActivity extends Activity {
             if (c != null) c.close();
         }
         return out.toString();
+    }
+
+    /** Abandonne une musique en cours d'import et retire le fichier incomplet. */
+    private void musicImportAbort() {
+        try {
+            if (musicInOut != null) musicInOut.close();
+        } catch (IOException ignored) {
+        }
+        musicInOut = null;
+        try {
+            if (musicInUri != null) getContentResolver().delete(musicInUri, null, null);
+        } catch (Exception ignored) {
+        }
+        musicInUri = null;
     }
 
     /** Flux limité à un nombre d'octets (réponse à une requête partielle). */
@@ -567,6 +589,64 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String musicList() {
             return musicAllowed() ? listMusic() : "PERM";
+        }
+
+        /** Import d'une musique : crée le fichier dans Music/Boucan/dir (Android 10+). Faux si impossible. */
+        @JavascriptInterface
+        public boolean musicImportBegin(String dir, String name) {
+            musicImportAbort();
+            if (Build.VERSION.SDK_INT < 29) return false;
+            try {
+                StringBuilder rel = new StringBuilder("Music/Boucan");
+                for (String part : String.valueOf(dir).split("/")) {
+                    String p = part.replaceAll("[\\\\:*?\"<>|]", "_").trim();
+                    if (p.length() > 0 && !p.startsWith(".")) rel.append('/').append(p);
+                }
+                String file = String.valueOf(name).replaceAll("[\\\\/:*?\"<>|]", "_");
+                int dot = file.lastIndexOf('.');
+                String mime = dot > 0 ? MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.substring(dot + 1).toLowerCase()) : null;
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Audio.Media.DISPLAY_NAME, file);
+                v.put(MediaStore.Audio.Media.MIME_TYPE, mime != null && mime.startsWith("audio") ? mime : "audio/mpeg");
+                v.put(MediaStore.Audio.Media.RELATIVE_PATH, rel.toString());
+                v.put(MediaStore.Audio.Media.IS_PENDING, 1);
+                musicInUri = getContentResolver().insert(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), v);
+                if (musicInUri == null) return false;
+                musicInOut = new BufferedOutputStream(getContentResolver().openOutputStream(musicInUri));
+                musicInFailed = false;
+                return true;
+            } catch (Throwable e) {
+                musicImportAbort();
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public void musicImportChunk(String b64) {
+            if (musicInOut == null || musicInFailed) return;
+            try {
+                musicInOut.write(Base64.decode(b64, Base64.DEFAULT));
+            } catch (Throwable e) {
+                musicInFailed = true;
+            }
+        }
+
+        @JavascriptInterface
+        public boolean musicImportEnd() {
+            if (musicInOut == null || musicInUri == null) return false;
+            try {
+                musicInOut.close();
+                musicInOut = null;
+                if (musicInFailed) throw new IOException("write");
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Audio.Media.IS_PENDING, 0);
+                getContentResolver().update(musicInUri, v, null, null);
+                musicInUri = null;
+                return true;
+            } catch (Throwable e) {
+                musicImportAbort();
+                return false;
+            }
         }
 
         @JavascriptInterface

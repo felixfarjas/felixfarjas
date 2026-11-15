@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '1.7';
+  B.VERSION = '1.8';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -23,13 +23,14 @@
   B.FX_DEFAULT = ['reverb', 'echo', 'highcut', 'lowcut'];
   B.FADES = [0, 0.1, 0.5, 2];
   // effets DJ des cases FX (appliqués à tout ce qui joue)
-  B.PAD_FX = ['brake', 'reverb', 'echo', 'highcut', 'lowcut', 'gate', 'loop', 'cut'];
+  B.PAD_FX = ['brake', 'reverb', 'echo', 'highcut', 'lowcut', 'gate', 'loop', 'pitch', 'cut'];
   // Réglages de chaque effet de case (curseurs 0..1) et leurs valeurs de départ.
   B.PAD_FX_PAR = {
     brake: ['brakeTime'], reverb: ['amount'], echo: ['echoTime', 'repeats'], highcut: ['amount', 'sweep'],
-    lowcut: ['amount', 'sweep'], gate: ['rate', 'depth'], loop: ['loopLen'], cut: ['fade']
+    lowcut: ['amount', 'sweep'], gate: ['rate', 'depth'], loop: ['loopLen'], pitch: ['pitchSt'], cut: ['fade']
   };
-  B.PAD_FX_DEF = { brake: [0.55], reverb: [1], echo: [0.6, 0.8], highcut: [1, 0.26], lowcut: [1, 0.26], gate: [0.54, 1], loop: [0.35], cut: [0] };
+  B.PAD_FX_DEF = { brake: [0.55], reverb: [1], echo: [0.6, 0.8], highcut: [1, 0.26], lowcut: [1, 0.26], gate: [0.54, 1], loop: [0.35], pitch: [0.75], cut: [0] };
+  B.TARGETS = ['all', 'pads', 'music'];
   B.DUCKS = ['none', 'duck', 'pause'];
   // Cases larges (toute la largeur) et leur hauteur en rangées : le widget
   // Spotify et le lecteur de fichiers.
@@ -53,6 +54,7 @@
     else if (f === 'highcut' || f === 'lowcut') { v.amt = 0.3 + 0.7 * p1; v.sweep = 0.02 + 1.5 * p2 * p2; }
     else if (f === 'gate') { v.hz = 2 * Math.pow(10, p1); v.amt = 0.3 + 0.7 * p2; }
     else if (f === 'loop') v.len = 0.5 * Math.pow(0.012, p1); // 500 ms -> 6 ms
+    else if (f === 'pitch') v.st = Math.round((p1 - 0.5) * 24); // -12 à +12 demi-tons
     else if (f === 'cut') v.sweep = 0.004 + 0.5 * p1 * p1;
     return v;
   };
@@ -291,7 +293,8 @@
       return b;
     }
 
-    var bus = A.bus = gain(1), cutG = A.cutG = gain(1);
+    // bus : entrée des sons de la soundboard (cases, micro) ; fxIn : entrée de la chaîne d'effets
+    var bus = A.bus = gain(1), fxIn = A.fxIn = gain(1), cutG = A.cutG = gain(1);
     var hp = A.hp = filter('highpass', 20), lp = A.lp = filter('lowpass', 20000);
     var clean = A.clean = gain(1), mix = gain(1), dry = A.dry = gain(1);
     var mHp = filter('highpass', 600), mLp = filter('lowpass', 2800);
@@ -321,7 +324,7 @@
     pre.connect(lDry); lDry.connect(kill);
     pre.connect(lGate); lGate.connect(lDel); lDel.connect(lWet); lWet.connect(kill); lDel.connect(lFb); lFb.connect(lDel);
 
-    bus.connect(cutG); cutG.connect(hp); hp.connect(lp);
+    fxIn.connect(cutG); cutG.connect(hp); hp.connect(lp);
     lp.connect(clean); clean.connect(mix);
     lp.connect(mHp); mHp.connect(mLp); mLp.connect(mSh); mSh.connect(mega); mega.connect(mix);
     lp.connect(dSh); dSh.connect(disto); disto.connect(mix);
@@ -343,6 +346,37 @@
       var chopLp = filter('lowpass', 180, 0.5);
       chop.connect(chopLp); chopLp.connect(A.tremDepth); A.tremDepth.connect(trem.gain); chop.start(0);
     } catch (e) {}
+    A.route();
+  };
+
+  // Cible des effets : 'all' (tout), 'pads' (soundboard seule) ou 'music'
+  // (lecteur de musique seul). Ce qui n'est pas visé contourne la chaîne.
+  A.target = 'all';
+  A.pitchK = 1;
+  A.route = function () {
+    try { A.bus.disconnect(); } catch (e) {}
+    A.bus.connect(A.target === 'music' ? A.comp : A.fxIn);
+    if (B.deck) B.deck.route();
+  };
+  function padRate() { return A.target === 'music' ? 1 : A.pitchK; }
+  // Hauteur (effet PITCH) : comme sur une platine, vitesse et hauteur vont ensemble.
+  function retune() {
+    var t = A.ctx.currentTime, id;
+    if (B.deck) B.deck.setRate(A.target === 'pads' ? 1 : A.pitchK);
+    if (A.braked) return;
+    for (id in A.voices) {
+      try {
+        var r = A.voices[id].src.playbackRate;
+        r.cancelScheduledValues(t);
+        r.setTargetAtTime(padRate(), t, 0.03);
+      } catch (e) {}
+    }
+  }
+  A.setTarget = function (tg) {
+    if (A.braked) brake(false);
+    A.target = B.TARGETS.indexOf(tg) >= 0 ? tg : 'all';
+    A.route();
+    retune();
   };
 
   A.resume = function () {
@@ -373,6 +407,8 @@
     var rev = on('reverb'), ech = on('echo'), hc = on('highcut'), lc = on('lowcut');
     var meg = on('mega'), dis = on('disto'), fla = on('flanger'), gat = on('gate'), cut = on('cut') ? 1 : 0;
     var hz = P.gate ? P.gate.hz : 7, lop = on('loop') ? 1 : 0;
+    var pk = P.pitch ? Math.pow(2, P.pitch.st / 12) : 1;
+    if (pk !== A.pitchK) { A.pitchK = pk; retune(); }
 
     A.fxEcho = ech;
     A.fxFb = P.echo ? P.echo.fb : 0.35 + 0.5 * ech;
@@ -409,13 +445,14 @@
   function brake(on, time) {
     var t = A.ctx.currentTime, id;
     A.braked = on;
-    if (B.deck) B.deck.brake(on, time);
+    if (B.deck && A.target !== 'pads') B.deck.brake(on, time);
+    if (A.target === 'music') return;
     for (id in A.voices) {
       var r = A.voices[id].src.playbackRate;
       try {
         r.cancelScheduledValues(t);
         r.setValueAtTime(r.value, t);
-        r.linearRampToValueAtTime(on ? 0.001 : 1, t + (on ? time || 0.9 : 0.35));
+        r.linearRampToValueAtTime(on ? 0.001 : padRate(), t + (on ? time || 0.9 : 0.35));
       } catch (e) {}
     }
   }
@@ -472,6 +509,7 @@
     var at = typeof from === 'number' && from > start && from < end - 0.02 ? from : start, left = end - at;
     var vol = pad.vol === undefined ? 1 : pad.vol, fi = pad.fadeIn || 0, fo = pad.fadeOut || 0;
     src.buffer = buf; src.connect(g); g.connect(A.bus);
+    if (padRate() !== 1) src.playbackRate.value = padRate();
     if (!pad.loop) { fi = Math.min(fi, left / 2 - 0.005); fo = Math.min(fo, left / 2 - 0.005); }
     if (fi > 0) { g.gain.setValueAtTime(0, now); A.fade(g.gain, 0, vol, now, fi); }
     else if (at > 0.001) { g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + 0.004); }
@@ -619,7 +657,7 @@
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, deck: { root: '', sub: '', vol: 0.8, fx: true, brake: 0.5 },
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', deck: { root: '', sub: '', vol: 0.8, brake: 0.5, colors: {} },
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -717,7 +755,11 @@
     cfg.editHold = raw.editHold === true;
     cfg.duckFade = num(raw.duckFade, 0.3, 0, 3);
     var dk = raw.deck && typeof raw.deck === 'object' ? raw.deck : {};
-    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), fx: dk.fx !== false, brake: num(dk.brake, 0.5, 0, 3) };
+    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), brake: num(dk.brake, 0.5, 0, 3), colors: {} };
+    // couleurs données aux morceaux (par identifiant)
+    var cols = dk.colors && typeof dk.colors === 'object' ? dk.colors : {}, nc = 0, ck;
+    for (ck in cols) if (nc < 3000 && color(cols[ck], '')) { cfg.deck.colors[ck] = cols[ck]; nc++; }
+    cfg.fxTarget = B.TARGETS.indexOf(raw.fxTarget) >= 0 ? raw.fxTarget : dk.fx === false ? 'pads' : 'all';
     (raw.pages instanceof Array ? raw.pages : []).slice(0, B.MAX_PAGES).forEach(function (pg, k) {
       var page = B.newPage(k + 1);
       if (pg && typeof pg === 'object') {
@@ -754,15 +796,19 @@
   }
   function two(n) { return n < 10 ? '0' + n : '' + n; }
 
-  B.exportParts = function () {
+  // music (optionnel) : morceaux du lecteur à joindre [{id, dir, name, size, c}].
+  // Ils sont décrits dans l'en-tête ; leurs octets suivent ceux des samples.
+  B.exportParts = function (music) {
     var ids = sampleIds(B.cfg), blobs = [];
+    music = music || [];
     return ids.reduce(function (ch, id) {
       return ch.then(function () { return D.get('samples', id); }).then(function (ab) { blobs.push(ab || new ArrayBuffer(0)); });
     }, Promise.resolve()).then(function () {
       var d = new Date(), size = 0;
       var head = utf8(JSON.stringify({
         app: 'boucan', format: 1, version: B.VERSION, date: d.toISOString(), config: B.cfg,
-        samples: ids.map(function (id, k) { return { id: id, size: blobs[k].byteLength }; })
+        samples: ids.map(function (id, k) { return { id: id, size: blobs[k].byteLength }; }),
+        music: music.map(function (m) { return { dir: m.dir, name: m.name, size: m.size, c: m.c || '' }; })
       }));
       var pre = new Uint8Array(12 + head.length), i;
       for (i = 0; i < 8; i++) pre[i] = MAGIC.charCodeAt(i);
@@ -770,6 +816,7 @@
       pre.set(head, 12);
       var parts = [pre.buffer].concat(blobs);
       parts.forEach(function (p) { size += p.byteLength; });
+      music.forEach(function (m) { size += m.size; });
       return {
         name: 'boucan-' + d.getFullYear() + two(d.getMonth() + 1) + two(d.getDate()) + '-' + two(d.getHours()) + two(d.getMinutes()) + '.boucan',
         parts: parts, size: size
@@ -777,21 +824,45 @@
     });
   };
 
-  B.parseExport = function (ab) {
-    var u = new Uint8Array(ab), i;
-    if (u.length < 12) throw new Error('format');
-    for (i = 0; i < 8; i++) if (u[i] !== MAGIC.charCodeAt(i)) throw new Error('format');
-    var hl = new DataView(ab).getUint32(8, true);
-    if (12 + hl > u.length) throw new Error('format');
-    var head = JSON.parse(unutf8(u.subarray(12, 12 + hl)));
-    if (!head || head.app !== 'boucan' || !(head.samples instanceof Array)) throw new Error('format');
-    var off = 12 + hl, samples = [];
-    head.samples.forEach(function (s) {
-      if (typeof s.id !== 'string' || typeof s.size !== 'number' || s.size < 0 || off + s.size > u.length) throw new Error('format');
-      samples.push({ id: s.id, data: ab.slice(off, off + s.size) });
-      off += s.size;
+  function readSlice(blob) {
+    return new Promise(function (res, rej) {
+      var fr = new FileReader();
+      fr.onload = function () { res(fr.result); };
+      fr.onerror = function () { rej(fr.error || new Error('lecture')); };
+      fr.readAsArrayBuffer(blob);
     });
-    return { config: head.config, samples: samples };
+  }
+  // Lit un fichier .boucan par tranches (il peut peser très lourd avec les
+  // musiques) : la config et les samples en mémoire, les musiques restent
+  // des tranches du fichier, lues plus tard une par une.
+  B.readExport = function (f) {
+    var head, off, samples = [], music = [];
+    return readSlice(f.slice(0, 12)).then(function (ab) {
+      var u = new Uint8Array(ab), i;
+      if (u.length < 12) throw new Error('format');
+      for (i = 0; i < 8; i++) if (u[i] !== MAGIC.charCodeAt(i)) throw new Error('format');
+      off = 12 + new DataView(ab).getUint32(8, true);
+      if (off > f.size) throw new Error('format');
+      return readSlice(f.slice(12, off));
+    }).then(function (hb) {
+      head = JSON.parse(unutf8(new Uint8Array(hb)));
+      if (!head || head.app !== 'boucan' || !(head.samples instanceof Array)) throw new Error('format');
+      return head.samples.reduce(function (ch, s) {
+        return ch.then(function () {
+          if (typeof s.id !== 'string' || typeof s.size !== 'number' || s.size < 0 || off + s.size > f.size) throw new Error('format');
+          var at = off;
+          off += s.size;
+          return readSlice(f.slice(at, at + s.size)).then(function (data) { samples.push({ id: s.id, data: data }); });
+        });
+      }, Promise.resolve());
+    }).then(function () {
+      (head.music instanceof Array ? head.music : []).forEach(function (m) {
+        if (!m || typeof m.name !== 'string' || typeof m.size !== 'number' || m.size <= 0 || off + m.size > f.size) throw new Error('format');
+        music.push({ dir: String(m.dir || ''), name: m.name, size: m.size, c: m.c || '', blob: f.slice(off, off + m.size) });
+        off += m.size;
+      });
+      return { config: head.config, samples: samples, music: music };
+    });
   };
 
   // Remplace toute la config par celle du fichier.
@@ -820,17 +891,59 @@
 
   // Android : le fichier passe au natif par morceaux base64, qui l'enregistre
   // (action "save") ou ouvre le partage (action "share").
-  B.nativeExport = function (action) {
-    return B.exportParts().then(function (ex) {
+  B.nativeExport = function (action, music, onProgress) {
+    music = music || [];
+    return B.exportParts(music).then(function (ex) {
       var Nv = window.BoucanNative, CH = 196608;
+      function send(u) { for (var o = 0; o < u.length; o += CH) Nv.exportChunk(b64(u.subarray(o, o + CH))); }
       Nv.exportBegin(ex.name);
-      ex.parts.forEach(function (ab) {
-        var u = new Uint8Array(ab), o;
-        for (o = 0; o < u.length; o += CH) Nv.exportChunk(b64(u.subarray(o, o + CH)));
+      ex.parts.forEach(function (ab) { send(new Uint8Array(ab)); });
+      // les musiques passent une par une, sans jamais être toutes en mémoire
+      return music.reduce(function (ch, m, k) {
+        return ch.then(function () {
+          if (onProgress) onProgress(k + 1, music.length);
+          return new Promise(function (res, rej) {
+            var x = new XMLHttpRequest();
+            x.open('GET', B.deck.base + 't/' + m.id, true);
+            x.responseType = 'arraybuffer';
+            x.onerror = function () { rej(new Error(m.name)); };
+            x.onload = function () {
+              if (x.status >= 400 || !x.response) { rej(new Error(m.name)); return; }
+              // la taille annoncée dans l'en-tête fait foi
+              var got = new Uint8Array(x.response), u = got;
+              if (got.length !== m.size) { u = new Uint8Array(m.size); u.set(got.subarray(0, m.size)); }
+              send(u);
+              res();
+            };
+            x.send();
+          });
+        });
+      }, Promise.resolve()).then(function () {
+        Nv.exportEnd(action);
+        return ex;
       });
-      Nv.exportEnd(action);
-      return ex;
     });
+  };
+
+  // Recopie dans le téléphone (dossier Music/Boucan) les musiques d'un fichier
+  // importé. Renvoie le nombre de morceaux écrits.
+  B.importMusic = function (music, onProgress) {
+    var Nv = window.BoucanNative, CH = 1048576 + 524288, done = 0;
+    if (!Nv || !Nv.musicImportBegin || !music.length) return Promise.resolve(0);
+    return music.reduce(function (ch, m, k) {
+      return ch.then(function () {
+        if (onProgress) onProgress(k + 1, music.length);
+        if (B.deck.has(m) || !Nv.musicImportBegin(m.dir, m.name)) return null;
+        var o = 0;
+        function next() {
+          if (o >= m.size) { if (Nv.musicImportEnd()) done++; return null; }
+          var part = m.blob.slice(o, o + CH);
+          o += CH;
+          return readSlice(part).then(function (ab) { Nv.musicImportChunk(b64(new Uint8Array(ab))); return next(); });
+        }
+        return next();
+      });
+    }, Promise.resolve()).then(function () { return done; });
   };
 
   // Navigateur : téléchargement classique.

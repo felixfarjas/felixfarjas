@@ -216,7 +216,11 @@
   }
 
   function renderFx() {
+    // sous le nom de l'effet, en petit : sa cible quand ce n'est pas « les deux »
+    var only = B.cfg.fxTarget !== 'all';
+    el.fxLbl.className = only ? 'lbl two' : 'lbl';
     el.fxLbl.textContent = t('fx.' + B.cfg.fx.type);
+    if (only) add(el.fxLbl, h('small', '', t('tg.' + B.cfg.fxTarget)));
     el.fxFill.style.width = (B.cfg.fx.amt * 100) + '%';
     el.fxFill.style.borderRightWidth = B.cfg.fx.amt > 0 ? '5px' : '0';
   }
@@ -244,6 +248,7 @@
   var PL = { st: null, art: '', artKey: null };
   var SVG_PREV = '<svg viewBox="0 0 24 24" width="30" height="30"><path d="M6 5h3v14H6zM20 5v14l-10-7z" fill="currentColor"/></svg>';
   var SVG_NEXT = '<svg viewBox="0 0 24 24" width="30" height="30"><path d="M15 5h3v14h-3zM4 5v14l10-7z" fill="currentColor"/></svg>';
+  var SVG_FIND = '<svg viewBox="0 0 24 24" width="24" height="24"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="2.5" fill="none"/><path d="M15.5 15.5L21 21" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
   var SVG_PLAY = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M7 4v16l13-8z" fill="currentColor"/></svg>';
   var SVG_PAUSE = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>';
 
@@ -298,7 +303,7 @@
     var d = { el: h('div', 'deck'), head: cmdBtn('dkHead', 'dlist'), list: h('div', 'dkList'), msg: cmdBtn('dkMsg', 'dperm'),
       now: h('div', 'dkNow'), wave: h('canvas', 'dkWave'), play: cmdBtn('plBtn plPlay', 'dtoggle'), vol: h('div', 'dkVol'), fill: h('div', 'fill'),
       rev: -1, cur: -1, seekF: null, fg: '#fff' };
-    add(d.el, d.head, add(h('div', 'dkMid'), d.list, d.msg), d.now, d.wave,
+    add(d.el, add(h('div', 'dkTop'), d.head, cmdBtn('dkFind', 'dfind', SVG_FIND)), add(h('div', 'dkMid'), d.list, d.msg), d.now, d.wave,
       add(h('div', 'dkBtns'), cmdBtn('plBtn', 'dprev', SVG_PREV), d.play, cmdBtn('plBtn', 'dnext', SVG_NEXT)), add(d.vol, d.fill, h('div', 'lbl', 'VOL')));
     slider(d.vol, function (v) {
       if (S.edit) return;
@@ -306,6 +311,34 @@
       d.fill.style.width = (v * 100) + '%';
     });
     // la liste défile : un morceau se choisit par un vrai "click"
+    // appui long sur un morceau : lui donner une couleur
+    var lpT = null, lpRow = null, lpX = 0, lpY = 0;
+    function rowOf(e) {
+      while (e && e !== d.list && e.getAttribute('data-ti') === null) e = e.parentNode;
+      return e && e !== d.list ? e : null;
+    }
+    on(d.list, 'touchstart', function (ev) {
+      var row = rowOf(ev.target), tc = ev.targetTouches[0];
+      lpRow = null;
+      if (lpT) clearTimeout(lpT);
+      if (!row || S.edit) return;
+      lpX = tc.clientX; lpY = tc.clientY;
+      lpT = setTimeout(function () { lpT = null; lpRow = row; buzz(); row.style.opacity = '0.5'; }, 480);
+    });
+    on(d.list, 'touchmove', function (ev) {
+      var tc = ev.targetTouches[0];
+      if (lpT && tc && (Math.abs(tc.clientX - lpX) > 8 || Math.abs(tc.clientY - lpY) > 8)) { clearTimeout(lpT); lpT = null; }
+    });
+    on(d.list, 'touchend', function (ev) {
+      if (lpT) { clearTimeout(lpT); lpT = null; }
+      if (!lpRow) return;
+      ev.preventDefault(); // pas de "click" : le morceau ne démarre pas
+      var row = lpRow;
+      lpRow = null;
+      row.style.opacity = '';
+      openColor(B.deck.queue[parseInt(row.getAttribute('data-ti'), 10)]);
+    });
+    on(d.list, 'touchcancel', function () { if (lpT) { clearTimeout(lpT); lpT = null; } if (lpRow) { lpRow.style.opacity = ''; lpRow = null; } });
     on(d.list, 'click', function (ev) {
       if (S.edit) return;
       var e = ev.target;
@@ -380,6 +413,7 @@
       for (k = 0; k < D.queue.length && k < 500; k++) {
         var row = h('div', 'dkRow');
         row.setAttribute('data-ti', k);
+        rowTint(row, D.queue[k]);
         add(d.list, add(row, h('span', 'dkTh'), h('span', '', D.queue[k].t + (D.queue[k].a ? '  ·  ' + D.queue[k].a : ''))));
       }
       d.list.scrollTop = 0;
@@ -395,6 +429,54 @@
     d.play.innerHTML = D.wanted() ? SVG_PAUSE : SVG_PLAY;
     d.fill.style.width = (B.cfg.deck.vol * 100) + '%';
     waveDraw(d);
+  }
+  function rowTint(row, track) {
+    var c = B.cfg.deck.colors[track.id];
+    row.style.backgroundColor = c ? 'rgba(' + parseInt(c.substr(1, 2), 16) + ',' + parseInt(c.substr(3, 2), 16) + ',' + parseInt(c.substr(5, 2), 16) + ',0.55)' : '';
+    row.style.boxShadow = c ? 'inset 5px 0 0 ' + c : '';
+  }
+  // Couleur d'un morceau (appui long dans la liste).
+  function openColor(track) {
+    if (!track) return;
+    sheet(track.t, function (body, sh) {
+      function set(c) {
+        if (c) B.cfg.deck.colors[track.id] = c; else delete B.cfg.deck.colors[track.id];
+        B.save();
+        page().pads.forEach(function (p, i) {
+          if (!p || p.type !== 'deck') return;
+          var rows = pads[i].dk.list.childNodes, k = B.deck.queue.indexOf(track);
+          if (rows[k]) rowTint(rows[k], track);
+        });
+        sh.close();
+      }
+      var none = h('button', 'btn gap', t('noColor'));
+      on(none, 'click', function () { set(''); });
+      sec(body, t('color'), swatches(B.cfg.deck.colors[track.id] || '', set), none);
+    });
+  }
+  // Recherche d'un titre dans le dossier source.
+  function openSearch() {
+    var D = B.deck;
+    sheet(t('dkFind'), function (body, sh) {
+      var box = h('div'), f = h('input', 'field');
+      f.type = 'text'; f.setAttribute('autocomplete', 'off'); f.setAttribute('autocorrect', 'off'); f.setAttribute('spellcheck', 'false');
+      f.placeholder = t('dkFindHint');
+      function fill() {
+        var res = D.search(f.value, 40);
+        box.innerHTML = '';
+        res.forEach(function (tr) {
+          var b = h('button', 'btn gap lst', tr.t + (tr.a ? '  ·  ' + tr.a : ''));
+          rowTint(b, tr);
+          on(b, 'click', function () { sh.close(); D.play(tr); });
+          add(box, b);
+        });
+        if (f.value && !res.length) add(box, h('div', 'note', t('dkFindNone')));
+      }
+      on(f, 'input', fill);
+      on(f, 'keydown', function (ev) { if (ev.keyCode === 13) f.blur(); });
+      sec(body, '', f, box);
+      setTimeout(function () { try { f.focus(); } catch (e) {} }, 150);
+    }, deckPaintAll);
   }
   var deckWas = false;
   function deckPaintAll() {
@@ -452,6 +534,7 @@
     if (!cmd) return;
     buzz();
     if (cmd === 'dlist') openLists();
+    else if (cmd === 'dfind') { if (D.state === 'ok') openSearch(); }
     else if (cmd === 'dperm') { if (D.state === 'perm') D.ask(); else if (D.state === 'ok') openLists(); }
     else if (cmd === 'dtoggle') D.toggle();
     else if (cmd === 'dnext') D.next();
@@ -572,6 +655,7 @@
     if (key === 'sweep') return v.sweep.toFixed(2) + ' s';
     if (key === 'rate') return v.hz.toFixed(1) + ' Hz';
     if (key === 'loopLen') return Math.round(v.len * 1000) + ' ms';
+    if (key === 'pitchSt') return (v.st > 0 ? '+' : '') + v.st + ' ' + t('semi');
     if (key === 'fade') return Math.round(v.sweep * 1000) + ' ms';
     return Math.round(v.amt * 100) + ' %';
   }
@@ -594,9 +678,9 @@
     g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 3 * dpr, 0, Math.PI * 2); g.stroke();
     el.adjTxt.textContent = parLabel(pad, B.PAD_FX_PAR[pad.fx][0]);
     el.adjName.textContent = pad.name || t('pfx.' + pad.fx);
-    el.adj.style.display = 'block';
+    el.adj.className = 'on';
   }
-  function adjHide() { el.adj.style.display = 'none'; }
+  function adjHide() { el.adj.className = ''; }
   function adjMove(hd, y) {
     var a = hd.adj, pad = hd.pad;
     if (!a.on) {
@@ -879,12 +963,24 @@
     });
 
     slider(el.fx, function (v) { setFx(B.cfg.fx.type, v); });
-    press(el.fxBtn, function () {
+    // Bouton FX : appui court = effet suivant ; appui long = cible des effets.
+    var fxT = null;
+    function fxDown(ev) {
+      if (ev.type === 'touchstart') ev.preventDefault();
+      if (fxT) clearTimeout(fxT);
+      fxT = setTimeout(function () { fxT = null; buzz(); openTarget(); }, 450);
+    }
+    function fxUp() {
+      if (!fxT) return;
+      clearTimeout(fxT); fxT = null;
       // Changer d'effet remet le dosage à zéro : jamais de surprise sonore.
       var list = B.cfg.fxList, k = Math.max(0, list.indexOf(B.cfg.fx.type));
       buzz();
       setFx(list[(k + 1) % list.length], 0);
-    });
+    }
+    on(el.fxBtn, 'touchstart', fxDown); on(el.fxBtn, 'touchend', fxUp);
+    on(el.fxBtn, 'touchcancel', function () { if (fxT) { clearTimeout(fxT); fxT = null; } });
+    on(el.fxBtn, 'mousedown', fxDown); on(el.fxBtn, 'mouseup', fxUp);
 
     // ÉDIT : appui long pour entrer (pas d'entrée par accident), simple appui pour sortir.
     var holdT = null;
@@ -1278,6 +1374,24 @@
     });
   }
 
+  // Sur quoi agissent les effets : soundboard, musique du lecteur, ou les deux.
+  function targetChoice(done) {
+    var row = choice([['pads', t('tg.pads')], ['music', t('tg.music')], ['all', t('tg.all')]], B.cfg.fxTarget, function (g) {
+      B.cfg.fxTarget = g;
+      A.setTarget(g);
+      A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
+      renderFx(); B.save();
+      if (done) done();
+    });
+    row.className = 'row tight';
+    return row;
+  }
+  function openTarget() {
+    sheet(t('fxTarget'), function (body, sh) {
+      sec(body, '', targetChoice(function () { sh.close(); }), h('div', 'note', t('fxTargetNote')));
+    });
+  }
+
   // Curseur fin d'une feuille de réglages.
   function rangeS(get, set, label) {
     var s = h('div', 'slider slim'), f = h('div', 'fill'), l = h('div', 'lbl');
@@ -1299,9 +1413,7 @@
       }
       sec(body, t('color'), swatches(pad.color, function (c) { pad.color = c; renderGrid(); B.save(); }));
       if (deck) {
-        sec(body, t('dkFx'), choice([['on', t('dkFxOn')], ['off', t('dkFxOff')]], B.cfg.deck.fx ? 'on' : 'off', function (m) {
-          B.cfg.deck.fx = m === 'on'; B.deck.route(); B.save();
-        }), h('div', 'note', t('dkFxNote')));
+        sec(body, t('fxTarget'), targetChoice(), h('div', 'note', t('fxTargetNote')));
         var rootB = h('button', 'btn', '');
         var rootLbl = function () { rootB.textContent = rootLabel(B.cfg.deck.root); };
         on(rootB, 'click', function () { openRoots(rootLbl); });
@@ -1640,12 +1752,13 @@
     });
   }
 
-  function doExport(action) {
+  // withMusic : joindre aussi les morceaux du dossier source du lecteur.
+  function doExport(action, withMusic) {
+    var music = withMusic ? B.deck.exportList() : [];
     busy(t('makingFile'));
     setTimeout(function () {
-      (NATIVE ? B.nativeExport(action) : B.webExport()).then(function () {
-        idle();
-        if (!NATIVE) toast(t('downloaded'));
+      (NATIVE ? B.nativeExport(action, music, function (k, n) { busy(t('exMusic') + ' ' + k + '/' + n); }) : B.webExport()).then(function () {
+        if (!NATIVE) { idle(); toast(t('downloaded')); }
       }, function (e) {
         idle();
         toast(t('exportFail') + (e && e.message || e), 4000);
@@ -1656,18 +1769,21 @@
   function doImport() {
     pick(el.fileConfig, function (f) {
       busy(t('readingFile'));
-      readFile(f).then(function (ab) {
-        var parsed = B.parseExport(ab);
+      B.readExport(f).then(function (parsed) {
         idle();
-        ask(t('askImport'), t('doImport'), function () {
+        ask(t('askImport') + (parsed.music.length ? ' ' + t('askImportMusic', parsed.music.length) : ''), t('doImport'), function () {
           busy(t('importingCfg'));
           B.applyImport(parsed).then(function () {
+            return B.importMusic(parsed.music, function (k, n) { busy(t('imMusic') + ' ' + k + '/' + n); });
+          }).then(function (n) {
+            if (n || parsed.music.length) B.deck.afterImport(parsed.music); else B.deck.load();
             B.lang = B.cfg.lang; tellLang();
+            A.setTarget(B.cfg.fxTarget);
             A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
             closeSheets();
             S.edit = false; S.moving = null;
             renderAll(); idle();
-            toast(t('imported'));
+            toast(parsed.music.length && !n && !(NATIVE && window.BoucanNative.musicImportBegin) ? t('imNoMusic') : t('imported'), 3500);
             return loadBuffers();
           })['catch'](function (e) { idle(); toast(t('importFail') + (e && e.message || e), 4000); });
         });
@@ -1691,9 +1807,13 @@
     sheet('BOUCAN', function (body, sh) {
       function btn(label, cls, fn) { var b = h('button', 'btn gap' + (cls ? ' ' + cls : ''), label); on(b, 'click', fn); return b; }
       if (NATIVE) {
-        sec(body, t('transfer'),
-          btn(t('send'), '', function () { doExport('share'); }),
-          btn(t('saveFile'), '', function () { doExport('save'); }),
+        var exList = B.deck.state === 'ok' ? B.deck.exportList() : [], exSize = 0, exOn = false;
+        exList.forEach(function (m) { exSize += m.size; });
+        var exChk = check(t('exWith', exList.length + ' ' + t('tracks') + ', ' + Math.max(1, Math.round(exSize / 1048576))), false, function (v) { exOn = v; });
+        if (!exList.length) exChk.style.display = 'none';
+        sec(body, t('transfer'), exChk,
+          btn(t('send'), '', function () { doExport('share', exOn); }),
+          btn(t('saveFile'), '', function () { doExport('save', exOn); }),
           btn(t('importCfg'), '', doImport),
           h('div', 'note', t('transferNote')));
       } else {
@@ -1702,6 +1822,8 @@
           btn(t('importCfg'), '', doImport),
           h('div', 'note', t('transferNote')));
       }
+
+      sec(body, t('fxTarget'), targetChoice(), h('div', 'note', t('fxTargetNote')));
 
       // Effets proposés par le bouton FX.
       var fxBox = h('div', 'sw two');
@@ -1749,6 +1871,7 @@
       sec(body, t('reset'), btn(t('resetBtn'), 'danger', function () {
         ask(t('askReset'), t('doReset'), function () {
           factoryReset().then(function () {
+            A.setTarget(B.cfg.fxTarget);
             A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
             closeSheets();
             S.edit = false;
@@ -1794,6 +1917,7 @@
     }).then(function () {
       bindPlay();
       tellLang();
+      A.setTarget(B.cfg.fxTarget);
       A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
       renderAll();
       idle();

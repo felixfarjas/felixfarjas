@@ -11,7 +11,7 @@
   var A = B.audio;
   // state : 'none' (pas de natif), 'perm' (autorisation à donner), 'ok'
   var D = B.deck = { base: 'https://boucan.music/', state: 'none', tracks: [], queue: [], track: null, rev: 0, wave: null, common: '', onChange: null };
-  var au = null, gain = null, duckK = 1, rateT = null, errs = 0, want = false;
+  var au = null, gain = null, duckK = 1, rateT = null, errs = 0, want = false, rateK = 1;
   var WAVE_N = 240, WAVE_MAX = 60 * 1024 * 1024, WAVE_AHEAD = 400;
 
   function nat() { return window.BoucanNative; }
@@ -39,6 +39,8 @@
       while (com && !under(t, com)) com = com.substr(0, com.lastIndexOf('/'));
     });
     D.common = com || '';
+    // dossier source introuvable (config venue d'un autre téléphone) : on repart de tout
+    if (D.state === 'ok' && D.tracks.length && cfg().root && !D.tracks.some(function (t) { return under(t, cfg().root); })) { cfg().root = ''; cfg().sub = ''; }
     D.queue = D.pick();
     D.rev++;
     emit();
@@ -84,6 +86,49 @@
     return q;
   };
   function relist() { D.queue = D.pick(); D.rev++; B.save(); emit(); pump(); }
+  // Recherche par titre ou artiste dans le dossier source.
+  D.search = function (text, max) {
+    var q = low(text).replace(/^\s+|\s+$/g, ''), root = D.root(), out = [], k, t;
+    if (!q) return out;
+    for (k = 0; k < D.tracks.length && out.length < max; k++) {
+      t = D.tracks[k];
+      if (under(t, root) && (low(t.t).indexOf(q) >= 0 || low(t.a).indexOf(q) >= 0)) out.push(t);
+    }
+    return out;
+  };
+  // Morceaux du dossier source, pour les joindre à un export. dir : dossier
+  // relatif recréé sur l'autre téléphone (sous Music/Boucan).
+  D.exportList = function () {
+    var root = D.root(), top = D.leaf(root), out = [];
+    if (!top || /^\d+$/.test(top)) top = 'Musique';
+    D.tracks.forEach(function (t) {
+      if (under(t, root) && t.f && t.z > 0) out.push({ id: t.id, dir: top + t.p.substr(root.length), name: t.f, size: t.z, c: cfg().colors[t.id] || '' });
+    });
+    return out;
+  };
+  function ends(s, tail) { return s.length >= tail.length && s.substr(s.length - tail.length) === tail; }
+  function imported(m) {
+    for (var k = 0; k < D.tracks.length; k++) {
+      var t = D.tracks[k];
+      if (t.f === m.name && t.z === m.size && ends(t.p, '/Boucan/' + m.dir)) return t;
+    }
+    return null;
+  }
+  D.has = function (m) { return !!imported(m); };
+  // Après un import avec musiques : le dossier source devient celui qui vient
+  // d'être recopié, et les couleurs retrouvent leurs morceaux.
+  D.afterImport = function (music) {
+    D.load();
+    var root = '';
+    cfg().colors = {};
+    music.forEach(function (m) {
+      var t = imported(m), top = '/Boucan/' + m.dir.split('/')[0];
+      if (!t) return;
+      if (m.c) cfg().colors[t.id] = m.c;
+      if (!root) root = t.p.substr(0, t.p.indexOf(top) + top.length);
+    });
+    D.setRoot(root);
+  };
   D.setSub = function (sub) { cfg().sub = sub; relist(); };
   D.setRoot = function (root) { cfg().root = root; cfg().sub = ''; relist(); };
   D.listName = function () { var s = cfg().sub; return s && s !== '.' ? D.leaf(s) : D.leaf(cfg().root); };
@@ -113,11 +158,16 @@
       if (want && ++errs <= 3) D.next(true); else { want = false; emit(); }
     }, false);
   }
+  // Effet PITCH : vitesse (et hauteur) de la musique.
+  D.setRate = function (k) {
+    rateK = k;
+    if (au && !rateT) { try { au.playbackRate = k; } catch (e) {} }
+  };
   // Avec ou sans les effets de Boucan.
   D.route = function () {
     if (!gain) return;
     try { gain.disconnect(); } catch (e) {}
-    gain.connect(cfg().fx ? A.bus : A.comp);
+    gain.connect(A.target !== 'pads' ? A.fxIn : A.comp);
   };
   D.setVol = function (v) {
     cfg().vol = v;
@@ -217,7 +267,7 @@
     D.track = t;
     want = true;
     au.src = D.base + 't/' + t.id;
-    au.playbackRate = 1;
+    au.playbackRate = rateK;
     var p = au.play();
     if (p && p['catch']) p['catch'](function () {});
     showWave(t);
@@ -271,7 +321,7 @@
     var p;
     if (sec < 0.05) {
       braked = false;
-      try { au.playbackRate = 1; } catch (e) {}
+      try { au.playbackRate = rateK; } catch (e) {}
       if (up) { p = au.play(); if (p && p['catch']) p['catch'](function () {}); } else au.pause();
       return;
     }
@@ -280,7 +330,7 @@
     if (up) { p = au.play(); if (p && p['catch']) p['catch'](function () {}); }
     var t0 = Date.now(), from = au.playbackRate, dur = sec * 1000;
     rateT = setInterval(function () {
-      var k = Math.min(1, (Date.now() - t0) / dur), r = from + ((up ? 1 : 0.07) - from) * k;
+      var k = Math.min(1, (Date.now() - t0) / dur), r = from + ((up ? rateK : 0.07) - from) * k;
       try { au.playbackRate = Math.max(0.07, r); } catch (e3) {}
       if (k >= 1) { clearInterval(rateT); rateT = null; if (!up) { au.pause(); braked = false; emit(); } }
     }, 30);
@@ -288,7 +338,7 @@
   }
   // Case FX « vinyl stop ».
   D.brake = function (on, time) {
-    if (!au || !cfg().fx) return;
+    if (!au) return;
     if (on && !D.playing()) return;
     if (!on && !want) return;
     spin(!on, on ? time || 0.9 : 0.35);
