@@ -78,11 +78,11 @@
   // ====================== Rendu ======================
   function buildGrid() {
     for (var i = 0; i < B.SLOTS; i++) {
-      var p = { el: h('div', 'pad'), inn: h('div', 'padIn'), prog: h('div', 'prog'), name: h('div', 'name'), tag: h('div', 'tag'), ico: h('div', 'padIco'), pl: playerDom() };
+      var p = { el: h('div', 'pad'), inn: h('div', 'padIn'), prog: h('div', 'prog'), name: h('div', 'name'), tag: h('div', 'tag'), ico: h('div', 'padIco'), pl: playerDom(), dk: deckDom() };
       p.el.style.left = (i % 2 * 50) + '%';
       p.el.style.top = (Math.floor(i / 2) * 25) + '%';
       p.el.setAttribute('data-i', i);
-      add(el.grid, add(p.el, add(p.inn, p.prog, p.ico, p.name, p.tag, p.pl.el)));
+      add(el.grid, add(p.el, add(p.inn, p.prog, p.ico, p.name, p.tag, p.pl.el, p.dk.el)));
       pads.push(p);
     }
   }
@@ -105,19 +105,20 @@
 
   function renderPad(i) {
     var p = pads[i], pad = page().pads[i], cls = 'padIn';
-    var big = !!pad && pad.type === 'player', covered = B.cover(page(), i) >= 0;
+    var wide = pad ? B.ROWS[pad.type] || 0 : 0, covered = B.cover(page(), i) >= 0;
     p.el.style.display = covered ? 'none' : '';
-    p.el.style.width = big ? '100%' : '50%';
-    p.el.style.height = big ? '50%' : '25%';
-    p.pl.el.style.display = big ? '' : 'none';
+    p.el.style.width = wide ? '100%' : '50%';
+    p.el.style.height = ((wide || 1) * 25) + '%';
+    p.pl.el.style.display = wide && pad.type === 'player' ? '' : 'none';
+    p.dk.el.style.display = wide && pad.type === 'deck' ? '' : 'none';
     if (covered) return;
-    if (big) {
+    if (wide) {
       p.inn.className = cls + ' pl';
       p.inn.style.background = ''; p.inn.style.border = ''; p.inn.style.boxShadow = '';
       p.inn.style.backgroundColor = pad.color; p.inn.style.color = ink(pad.color);
       p.name.textContent = ''; p.tag.textContent = ''; p.ico.innerHTML = '';
       setProg(p, null);
-      playerPaint(p.pl);
+      if (pad.type === 'player') playerPaint(p.pl); else deckPaint(p.dk);
       return;
     }
     if (!pad) {
@@ -200,31 +201,26 @@
     if (S.onVoice) S.onVoice(id);
   };
 
-  // ====================== Player ======================
-  // Bloc 2 x 2 qui pilote le lecteur de musique du téléphone (Spotify ou autre)
-  // par le natif : titre, pochette, lecture/pause, suivant, précédent, volume.
-  var PL = { st: null, art: '', artKey: null, volHold: 0 };
-  var SVG_PREV = '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M6 5h3v14H6zM20 5v14l-10-7z" fill="currentColor"/></svg>';
-  var SVG_NEXT = '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M15 5h3v14h-3zM4 5v14l10-7z" fill="currentColor"/></svg>';
-  var SVG_PLAY = '<svg viewBox="0 0 24 24" width="44" height="44"><path d="M7 4v16l13-8z" fill="currentColor"/></svg>';
-  var SVG_PAUSE = '<svg viewBox="0 0 24 24" width="44" height="44"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>';
+  // ====================== Widgets de musique ======================
+  // SPOTIFY (une rangée) : pilote le lecteur de musique du téléphone par le
+  // natif — titre, pochette, lecture/pause, suivant, précédent.
+  var PL = { st: null, art: '', artKey: null };
+  var SVG_PREV = '<svg viewBox="0 0 24 24" width="30" height="30"><path d="M6 5h3v14H6zM20 5v14l-10-7z" fill="currentColor"/></svg>';
+  var SVG_NEXT = '<svg viewBox="0 0 24 24" width="30" height="30"><path d="M15 5h3v14h-3zM4 5v14l10-7z" fill="currentColor"/></svg>';
+  var SVG_PLAY = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M7 4v16l13-8z" fill="currentColor"/></svg>';
+  var SVG_PAUSE = '<svg viewBox="0 0 24 24" width="36" height="36"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>';
 
+  function cmdBtn(cls, cmd, html) {
+    var b = h('div', cls);
+    b.setAttribute('data-cmd', cmd);
+    if (html) b.innerHTML = html;
+    return b;
+  }
   function playerDom() {
     var d = { el: h('div', 'player'), art: h('div', 'plArt'), title: h('div', 'plTitle'), artist: h('div', 'plArtist'),
-      prev: h('div', 'plBtn'), play: h('div', 'plBtn plPlay'), next: h('div', 'plBtn'),
-      vol: h('div', 'plVol'), fill: h('div', 'fill'), lbl: h('div', 'lbl', 'VOL'), msg: h('div', 'plMsg') };
-    d.prev.innerHTML = SVG_PREV; d.next.innerHTML = SVG_NEXT;
-    d.prev.setAttribute('data-cmd', 'prev'); d.play.setAttribute('data-cmd', 'toggle'); d.next.setAttribute('data-cmd', 'next');
-    d.msg.setAttribute('data-cmd', 'perm');
-    add(d.el, add(h('div', 'plTop'), d.art, add(h('div', 'plTxt'), d.title, d.artist)),
-      add(h('div', 'plBtns'), d.prev, d.play, d.next), add(d.vol, d.fill, d.lbl), d.msg);
-    slider(d.vol, function (v) {
-      if (S.edit || !NATIVE) return;
-      PL.volHold = Date.now() + 1500; // le temps que le téléphone suive
-      if (PL.st) PL.st.vol = v;
-      d.fill.style.width = (v * 100) + '%';
-      try { window.BoucanNative.playerVol(v); } catch (e) {}
-    });
+      play: cmdBtn('plBtn plPlay', 'toggle'), msg: cmdBtn('plMsg', 'perm') };
+    add(d.el, d.art, add(h('div', 'plRight'), add(h('div', 'plTxt'), d.title, d.artist),
+      add(h('div', 'plBtns'), cmdBtn('plBtn', 'prev', SVG_PREV), d.play, cmdBtn('plBtn', 'next', SVG_NEXT))), d.msg);
     return d;
   }
   function playerPaint(d) {
@@ -235,16 +231,16 @@
     d.artist.textContent = ok ? st.artist : '';
     d.play.innerHTML = ok && st.playing ? SVG_PAUSE : SVG_PLAY;
     d.art.style.backgroundImage = ok && PL.art ? 'url(data:image/jpeg;base64,' + PL.art + ')' : '';
-    d.fill.style.width = ((st ? st.vol || 0 : 0) * 100) + '%';
   }
-  function playerShown() {
-    return page().pads.some(function (p) { return p && p.type === 'player'; });
+  function shown(type) {
+    return page().pads.some(function (p) { return p && p.type === type; });
   }
   function playerPoll() {
-    if (!NATIVE || !window.BoucanNative.playerState || !B.cfg || document.hidden || !playerShown()) return;
-    var st, vol = PL.st ? PL.st.vol : 0;
+    if (!B.cfg || document.hidden) return;
+    if (shown('deck')) deckPaintAll();
+    if (!NATIVE || !window.BoucanNative.playerState || !shown('player')) return;
+    var st;
     try { st = JSON.parse(window.BoucanNative.playerState()); } catch (e) { return; }
-    if (Date.now() < PL.volHold) st.vol = vol;
     var key = st.app ? st.app + '|' + st.title + '|' + st.artist : null;
     if (key !== PL.artKey) {
       PL.artKey = key; PL.art = '';
@@ -258,22 +254,111 @@
     PL.st = st;
     page().pads.forEach(function (p, i) { if (p && p.type === 'player') playerPaint(pads[i].pl); });
   }
-  function playerTap(target) {
-    var cmd = null;
-    while (target && target !== el.grid && !cmd) { cmd = target.getAttribute && target.getAttribute('data-cmd'); target = target.parentNode; }
-    if (!cmd || !NATIVE || !window.BoucanNative.playerCmd) return;
-    buzz();
-    try { window.BoucanNative.playerCmd(cmd); } catch (e) {}
-    setTimeout(playerPoll, 350);
-    setTimeout(playerPoll, 900);
+
+  // LECTEUR (trois rangées) : lit les fichiers de musique du téléphone, par
+  // dossier, album ou artiste, avec son propre volume (voir deck.js).
+  function deckDom() {
+    var d = { el: h('div', 'deck'), head: cmdBtn('dkHead', 'dlist'), list: h('div', 'dkList'), msg: cmdBtn('dkMsg', 'dperm'),
+      now: h('div', 'dkNow'), barIn: h('div'), play: cmdBtn('plBtn plPlay', 'dtoggle'), vol: h('div', 'dkVol'), fill: h('div', 'fill'), rev: -1, cur: -1 };
+    add(d.el, d.head, add(h('div', 'dkMid'), d.list, d.msg), d.now, add(h('div', 'dkBar'), d.barIn),
+      add(h('div', 'dkBtns'), cmdBtn('plBtn', 'dprev', SVG_PREV), d.play, cmdBtn('plBtn', 'dnext', SVG_NEXT)), add(d.vol, d.fill, h('div', 'lbl', 'VOL')));
+    slider(d.vol, function (v) {
+      if (S.edit) return;
+      B.deck.setVol(v);
+      d.fill.style.width = (v * 100) + '%';
+    });
+    // la liste défile : un morceau se choisit par un vrai "click"
+    on(d.list, 'click', function (ev) {
+      if (S.edit) return;
+      var e = ev.target;
+      while (e && e !== d.list && e.getAttribute('data-ti') === null) e = e.parentNode;
+      if (!e || e === d.list) return;
+      buzz();
+      B.deck.play(B.deck.queue[parseInt(e.getAttribute('data-ti'), 10)]);
+    });
+    return d;
   }
-  // Baisse (ou met en pause) la musique du téléphone pendant qu'on parle.
+  function deckPaint(d) {
+    var D = B.deck, ok = D.state === 'ok' && D.queue.length > 0, k;
+    d.msg.style.display = ok ? 'none' : '';
+    d.msg.textContent = D.state === 'none' ? t('plNoNative') : D.state === 'perm' ? t('dkPerm') : t('dkEmpty');
+    d.head.textContent = (D.listName() || t('dkAll')) + '  \u25be';
+    if (d.rev !== D.rev) {
+      d.rev = D.rev; d.cur = -1;
+      d.list.innerHTML = '';
+      for (k = 0; k < D.queue.length && k < 500; k++) {
+        var row = h('div', 'dkRow', D.queue[k].t + (D.queue[k].a ? '  ·  ' + D.queue[k].a : ''));
+        row.setAttribute('data-ti', k);
+        add(d.list, row);
+      }
+      d.list.scrollTop = 0;
+    }
+    var cur = D.track ? D.queue.indexOf(D.track) : -1;
+    if (cur !== d.cur) {
+      if (d.list.childNodes[d.cur]) d.list.childNodes[d.cur].className = 'dkRow';
+      if (d.list.childNodes[cur]) d.list.childNodes[cur].className = 'dkRow cur';
+      d.cur = cur;
+    }
+    d.now.textContent = D.track ? D.track.t + (D.track.a ? ' — ' + D.track.a : '') : '';
+    d.barIn.style.width = (D.progress() * 100) + '%';
+    d.play.innerHTML = D.playing() ? SVG_PAUSE : SVG_PLAY;
+    d.fill.style.width = (B.cfg.deck.vol * 100) + '%';
+  }
+  function deckPaintAll() {
+    if (!B.cfg) return;
+    page().pads.forEach(function (p, i) { if (p && p.type === 'deck') deckPaint(pads[i].dk); });
+  }
+  // Choix de la liste à lire.
+  function openLists() {
+    var D = B.deck, kind = B.cfg.deck.kind;
+    D.load();
+    sheet(t('dkLists'), function (body, sh) {
+      var box = h('div');
+      function fill() {
+        box.innerHTML = '';
+        var items = kind === 'all' ? [{ key: '', n: D.tracks.length }] : D.lists(kind);
+        items.forEach(function (it) {
+          var cur = kind === B.cfg.deck.kind && (kind === 'all' || it.key === B.cfg.deck.key);
+          var b = h('button', 'btn gap lst' + (cur ? ' on' : ''), (kind === 'all' ? t('dkAll') : it.key || '?') + '  (' + it.n + ')');
+          on(b, 'click', function () { D.setList(kind, it.key); sh.close(); });
+          add(box, b);
+        });
+        if (!items.length) add(box, h('div', 'note', t('dkEmpty')));
+      }
+      var kinds = choice([['all', t('kAll')], ['dir', t('kDir')], ['album', t('kAlbum')], ['artist', t('kArtist')]], kind, function (k) { kind = k; fill(); });
+      kinds.className = 'row tight';
+      sec(body, '', kinds, box);
+      fill();
+    }, deckPaintAll);
+  }
+
+  // Appui sur un bouton d'un widget.
+  function widgetTap(target) {
+    var cmd = null, N = window.BoucanNative, D = B.deck;
+    while (target && target !== el.grid && !cmd) { cmd = target.getAttribute && target.getAttribute('data-cmd'); target = target.parentNode; }
+    if (!cmd) return;
+    buzz();
+    if (cmd === 'dlist') openLists();
+    else if (cmd === 'dperm') { if (D.state === 'perm') D.ask(); else if (D.state === 'ok') openLists(); }
+    else if (cmd === 'dtoggle') D.toggle();
+    else if (cmd === 'dnext') D.next();
+    else if (cmd === 'dprev') D.prev();
+    else if (NATIVE && N.playerCmd) {
+      try { N.playerCmd(cmd); } catch (e) {}
+      setTimeout(playerPoll, 350);
+      setTimeout(playerPoll, 900);
+    }
+  }
+  // Baisse (ou met en pause) la musique pendant qu'on parle : celle du
+  // lecteur intégré, et celle des autres applis par le natif.
   var duckT = null;
   function duck(on, forSec) {
-    if (!NATIVE || !window.BoucanNative.duck) return;
     if (duckT) { clearTimeout(duckT); duckT = null; }
     var mode = B.cfg.duck === 'pause' ? 2 : B.cfg.duck === 'duck' ? 1 : 0;
-    function send(m) { try { window.BoucanNative.duck(m); } catch (e) {} }
+    function send(m) {
+      B.deck.duck(m);
+      try { if (NATIVE && window.BoucanNative.duck) window.BoucanNative.duck(m); } catch (e) {}
+    }
     if (on) { if (mode) send(mode); return; }
     if (forSec) duckT = setTimeout(function () { duckT = null; send(0); }, forSec * 1000); else send(0);
   }
@@ -361,15 +446,16 @@
   function padDown(i, key, target) {
     var pad = page().pads[i];
     if (!pad) return;
-    if (pad.type === 'player') { playerTap(target); return; }
+    if (B.ROWS[pad.type]) { widgetTap(target); return; }
     var type = pad.type || 'sample';
     if (type === 'sample' && !A.buffers[pad.sample]) return;
     if (type === 'mic' && rec) return;
     buzz();
-    held[key] = { pad: pad, i: i, pg: B.cfg.cur };
-    if (type === 'fx') A.padFx(pad, pad.mode === 'toggle' ? !A.fxPads[pad.id] : true);
+    var hd = held[key] = { pad: pad, i: i, pg: B.cfg.cur };
+    // "was" : l'état d'avant, pour pouvoir annuler l'appui si c'était un swipe
+    if (type === 'fx') { hd.was = !!A.fxPads[pad.id]; A.padFx(pad, pad.mode === 'toggle' ? !hd.was : true); }
     else if (type === 'mic') recHold(pad, i, key);
-    else if (pad.mode === 'toggle' && A.voices[pad.id]) A.stop(pad.id);
+    else if (pad.mode === 'toggle' && A.voices[pad.id]) { hd.was = A.pos(A.voices[pad.id]); A.stop(pad.id); }
     else A.play(pad);
     renderPad(i);
   }
@@ -381,6 +467,18 @@
     if (type === 'fx') { if (hd.pad.mode !== 'toggle') A.padFx(hd.pad, false); }
     else if (type === 'mic') { if (rec && rec.key === key) recEnd(false); }
     else if (hd.pad.mode === 'gate') A.stop(hd.pad.id);
+    if (hd.pg === B.cfg.cur) renderPad(hd.i);
+  }
+  // Le geste était un swipe, pas un appui : on défait ce que l'appui a lancé.
+  function padUndo(key) {
+    var hd = held[key];
+    if (!hd) return;
+    delete held[key];
+    var pad = hd.pad, type = pad.type || 'sample';
+    if (type === 'fx') A.padFx(pad, !!hd.was && pad.mode === 'toggle');
+    else if (type === 'mic') { if (rec && rec.key === key) recEnd(true); }
+    else if (typeof hd.was === 'number') A.play(pad, hd.was);
+    else A.stop(pad.id, false, true);
     if (hd.pg === B.cfg.cur) renderPad(hd.i);
   }
   function padIndex(target) {
@@ -397,11 +495,27 @@
     }
     return null;
   }
-  function goPage(k) {
+  // dir : +1 la page arrive par la droite, -1 par la gauche.
+  function goPage(k, dir) {
     if (k === B.cfg.cur || !B.cfg.pages[k]) return;
+    if (dir === undefined) dir = k > B.cfg.cur ? 1 : -1;
     B.cfg.cur = k;
     renderGrid(); renderTabs(); playerPoll();
     B.save();
+    slide(dir * el.grid.clientWidth * 0.45, 0.35);
+  }
+  function gridX(x, anim) {
+    var st = el.grid.style, tr = anim ? 'transform .17s ease-out, opacity .17s ease-out' : 'none';
+    st.webkitTransition = anim ? '-webkit-' + tr : tr; st.transition = tr;
+    st.webkitTransform = st.transform = x ? 'translateX(' + x + 'px)' : '';
+  }
+  // Place la grille en x puis la laisse glisser à sa place.
+  function slide(x, opacity) {
+    gridX(x, false);
+    el.grid.style.opacity = opacity;
+    void el.grid.offsetWidth;
+    gridX(0, true);
+    el.grid.style.opacity = '';
   }
 
   function setFx(type, amt) {
@@ -457,25 +571,65 @@
   }
 
   function bindPlay() {
+    // Swipe horizontal franc et rapide = page voisine. sw.on : le geste est reconnu.
+    var sw = null;
+    function inList(e) {
+      while (e && e !== el.grid) { if (e.className === 'dkList') return true; e = e.parentNode; }
+      return false;
+    }
+    function touchOf(list, id) {
+      for (var k = 0; k < list.length; k++) if (list[k].identifier === id) return list[k];
+      return null;
+    }
     on(el.grid, 'touchstart', function (ev) {
       A.resume();
-      if (S.edit) return;
-      ev.preventDefault();
+      if (sw && sw.on) { ev.preventDefault(); return; }
+      var list = inList(ev.target), first = ev.changedTouches[0];
+      if (!S.edit && !list) ev.preventDefault();
+      sw = B.cfg.swipe && !list && ev.touches.length === 1 && B.cfg.pages.length > 1 && !S.moving ?
+        { id: first.identifier, x: first.clientX, y: first.clientY, t: Date.now(), on: false, dx: 0 } : null;
+      if (S.edit || list) return;
       for (var k = 0; k < ev.changedTouches.length; k++) {
         var t = ev.changedTouches[k], i = padIndex(t.target);
         if (i >= 0) padDown(i, 't' + t.identifier, t.target);
       }
     });
     function end(ev) {
+      if (sw && touchOf(ev.changedTouches, sw.id)) {
+        var s = sw, to = B.cfg.cur + (s.dx < 0 ? 1 : -1);
+        sw = null;
+        if (s.on) {
+          if (ev.type === 'touchend' && Math.abs(s.dx) > 55 && B.cfg.pages[to]) { buzz(); goPage(to, s.dx < 0 ? 1 : -1); }
+          else gridX(0, true);
+        }
+      }
       for (var k = 0; k < ev.changedTouches.length; k++) padUp('t' + ev.changedTouches[k].identifier);
     }
     on(el.grid, 'touchend', end);
     on(el.grid, 'touchcancel', end);
     on(el.grid, 'touchmove', function (ev) {
+      var tc = sw && touchOf(ev.touches, sw.id), k;
+      if (sw && tc) {
+        var dx = tc.clientX - sw.x, dy = tc.clientY - sw.y;
+        if (!sw.on) {
+          if (Date.now() - sw.t > 260 || Math.abs(dy) > 28 || ev.touches.length > 1) sw = null;
+          else if (Math.abs(dx) > 18 && Math.abs(dx) > 2 * Math.abs(dy)) {
+            sw.on = true;
+            Object.keys(held).forEach(padUndo); // l'appui qui a lancé le geste ne compte pas
+          }
+        }
+        if (sw && sw.on) {
+          ev.preventDefault();
+          sw.dx = dx;
+          // la grille suit le doigt ; elle résiste s'il n'y a pas de page de ce côté
+          gridX(B.cfg.pages[B.cfg.cur + (dx < 0 ? 1 : -1)] ? dx : dx * 0.25, false);
+          return;
+        }
+      }
       if (!rec) return;
-      for (var k = 0; k < ev.changedTouches.length; k++) {
-        var tc = ev.changedTouches[k];
-        if (rec && rec.key === 't' + tc.identifier) recMove(tc.clientX, tc.clientY);
+      for (k = 0; k < ev.changedTouches.length; k++) {
+        var rt = ev.changedTouches[k];
+        if (rec && rec.key === 't' + rt.identifier) recMove(rt.clientX, rt.clientY);
       }
     });
     on(window, 'mousemove', function (ev) { if (rec && rec.key === 'm') recMove(ev.clientX, ev.clientY); });
@@ -557,7 +711,7 @@
     if (S.moving) {
       var m = S.moving, src = B.cfg.pages[m.pg];
       S.moving = null;
-      if (pg.pads[i] && pg.pads[i].type === 'player') { toast(t('plNoSwap')); }
+      if (pg.pads[i] && B.ROWS[pg.pads[i].type]) { toast(t('plNoSwap')); }
       else if (src && src.pads[m.i] === m.pad && !(m.pg === B.cfg.cur && m.i === i)) {
         src.pads[m.i] = pg.pads[i];
         pg.pads[i] = m.pad;
@@ -872,33 +1026,42 @@
       });
       big('mic', t('typeMic'), t('noteMic'), function () { make('mic'); open(); });
       big('fx', t('typeFx'), t('noteFx'), function () { make('fx'); open(); });
-      big('player', 'PLAYER', t('notePlayer'), function () {
-        // 2 x 2 cases : la rangée de la case touchée et celle du dessous (ou du dessus)
-        var a = Math.min(4, i - i % 2), free = function (x) { return [x, x + 1, x + 2, x + 3].every(function (k) { return !pg.pads[k] && B.cover(pg, k) < 0; }); };
-        if (!free(a)) a -= 2;
-        if (a < 0 || !free(a)) { toast(t('plRoom'), 3500); return; }
-        pg.pads[a] = { id: B.uid('p'), type: 'player', name: 'PLAYER', color: '#2E7D32' };
+      // un widget prend toute la largeur : on cherche des rangées libres à partir de la case touchée
+      function widget(type, name, color) {
+        var rows = B.ROWS[type], a, at = -1;
+        function free(x) { for (var k = x; k < x + 2 * rows; k++) if (pg.pads[k] || B.cover(pg, k) >= 0) return false; return true; }
+        for (a = Math.min(B.SLOTS - 2 * rows, i - i % 2); a >= 0 && at < 0; a -= 2) if (free(a)) at = a;
+        if (at < 0) { toast(t('plRoom', rows * 2), 3500); return; }
+        pg.pads[at] = { id: B.uid('p'), type: type, name: name, color: color };
         B.saveNow(); sh.close(); renderAll(); playerPoll();
-      });
+      }
+      big('deck', t('typeDeck'), t('noteDeck'), function () { widget('deck', t('typeDeck'), '#37474F'); });
+      big('player', 'SPOTIFY', t('notePlayer'), function () { widget('player', 'SPOTIFY', '#2E7D32'); });
     });
   }
 
-  function editPlayer(pi, i) {
-    var pg = B.cfg.pages[pi], pad = pg.pads[i];
-    sheet('PLAYER', function (body, sh) {
-      sec(body, '', h('div', 'note', t('plHelp')));
-      if (NATIVE && window.BoucanNative.playerCmd) {
+  // Éditeur des widgets de musique.
+  function editWidget(pi, i) {
+    var pg = B.cfg.pages[pi], pad = pg.pads[i], deck = pad.type === 'deck';
+    sheet(deck ? t('typeDeck') : 'SPOTIFY', function (body, sh) {
+      sec(body, '', h('div', 'note', t(deck ? 'dkHelp' : 'plHelp')));
+      if (!deck && NATIVE && window.BoucanNative.playerCmd) {
         var pb = h('button', 'btn accent', t('plAllow'));
         on(pb, 'click', function () { window.BoucanNative.playerCmd('perm'); });
         sec(body, t('plAccess'), pb, h('div', 'note', t('plAccessNote')));
       }
       sec(body, t('color'), swatches(pad.color, function (c) { pad.color = c; renderGrid(); B.save(); }));
+      if (deck) {
+        sec(body, t('dkFx'), choice([['on', t('dkFxOn')], ['off', t('dkFxOff')]], B.cfg.deck.fx ? 'on' : 'off', function (m) {
+          B.cfg.deck.fx = m === 'on'; B.deck.route(); B.save();
+        }), h('div', 'note', t('dkFxNote')));
+      }
       sec(body, t('duckSec'), choice([['none', t('duckNone')], ['duck', t('duckDuck')], ['pause', t('duckPause')]], B.cfg.duck, function (m) {
         B.cfg.duck = m; B.save();
       }), h('div', 'note', t('duckNote')));
       var clear = h('button', 'btn danger', t('clear'));
       on(clear, 'click', function () {
-        ask(t('askClear', 'PLAYER'), t('doClear'), function () { pg.pads[i] = null; sh.close(); });
+        ask(t('askClear', deck ? t('typeDeck') : 'SPOTIFY'), t('doClear'), function () { pg.pads[i] = null; sh.close(); });
       });
       sec(body, t('padSec'), clear);
     }, function () { B.saveNow(); renderAll(); });
@@ -907,7 +1070,7 @@
   function editPad(pi, i) {
     var pg = B.cfg.pages[pi], pad = pg.pads[i];
     if (!pad) return;
-    if (pad.type === 'player') { editPlayer(pi, i); return; }
+    if (B.ROWS[pad.type]) { editWidget(pi, i); return; }
     var type = pad.type || 'sample';
     var pausedAt = null, raf = null, wave = null, playLbl, playIco, times = function () {};
     function show() { if (pi === B.cfg.cur) renderPad(i); B.save(); }
@@ -1316,7 +1479,10 @@
       var vib = btn('', '', function () { B.cfg.vibrate = !B.cfg.vibrate; vibLbl(); B.save(); buzz(); });
       function vibLbl() { vib.textContent = t(B.cfg.vibrate ? 'vibOn' : 'vibOff'); vib.className = 'btn' + (B.cfg.vibrate ? ' on' : ''); }
       vibLbl();
-      sec(body, t('settings'), vib);
+      var swp = btn('', '', function () { B.cfg.swipe = !B.cfg.swipe; swpLbl(); B.save(); });
+      function swpLbl() { swp.textContent = t(B.cfg.swipe ? 'swipeOn' : 'swipeOff'); swp.className = 'btn gap' + (B.cfg.swipe ? ' on' : ''); }
+      swpLbl();
+      sec(body, t('settings'), vib, swp);
 
       sec(body, t('reset'), btn(t('resetBtn'), 'danger', function () {
         ask(t('askReset'), t('doReset'), function () {
@@ -1370,6 +1536,8 @@
       renderAll();
       idle();
       if (B.volatile) toast(t('noStore'), 6000);
+      B.deck.onChange = deckPaintAll;
+      B.deck.load();
       setInterval(playerPoll, 1000);
       on(document, 'visibilitychange', playerPoll);
       return loadBuffers();

@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '1.4';
+  B.VERSION = '1.5';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -31,14 +31,18 @@
   };
   B.PAD_FX_DEF = { brake: [0.55], reverb: [1], echo: [0.6, 0.8], highcut: [1, 0.26], lowcut: [1, 0.26], gate: [0.54, 1], cut: [0] };
   B.DUCKS = ['none', 'duck', 'pause'];
-  // Une case PLAYER occupe 2 x 2 cases. Renvoie la case d'ancrage du player
-  // qui recouvre la case i, ou -1.
+  // Cases larges (toute la largeur) et leur hauteur en rangées : le widget
+  // Spotify et le lecteur de fichiers.
+  B.ROWS = { player: 1, deck: 3 };
+  // Renvoie la case d'ancrage du widget qui recouvre la case i, ou -1.
   B.cover = function (pg, i) {
-    for (var a = i - 3; a < i; a++) {
-      if (a >= 0 && a % 2 === 0 && pg.pads[a] && pg.pads[a].type === 'player') return a;
+    for (var a = 0; a < i; a += 2) {
+      var p = pg.pads[a], r = p && B.ROWS[p.type];
+      if (r && i < a + 2 * r) return a;
     }
     return -1;
   };
+  B.DECK_KINDS = ['all', 'dir', 'album', 'artist'];
   // Valeurs réelles d'une case FX, d'après ses curseurs.
   B.padFxVal = function (pad) {
     var d = B.PAD_FX_DEF[pad.fx] || [0, 0], f = pad.fx;
@@ -273,7 +277,7 @@
     var disto = A.disto = gain(0);
     var trem = A.trem = gain(1), kill = A.kill = gain(1);
 
-    var comp = ctx.createDynamicsCompressor();
+    var comp = A.comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -10; comp.knee.value = 10; comp.ratio.value = 12;
     comp.attack.value = 0.002; comp.release.value = 0.2;
 
@@ -367,6 +371,7 @@
   function brake(on, time) {
     var t = A.ctx.currentTime, id;
     A.braked = on;
+    if (B.deck) B.deck.brake(on, time);
     for (id in A.voices) {
       var r = A.voices[id].src.playbackRate;
       try {
@@ -481,6 +486,7 @@
     if (A.braked) brake(false);
     if (fxIds.length) { applyFx(0.03); fxIds.forEach(function (id) { if (A.onChange) A.onChange(id); }); }
     if (B.mic && B.mic.on) B.mic.stop(true);
+    if (B.deck) B.deck.pause();
     A.killed = true;
     A.kill.gain.cancelScheduledValues(t);
     A.kill.gain.setTargetAtTime(0, t, 0.008);
@@ -562,18 +568,19 @@
     { name: ['MIX', 'MIX'], color: '#8E24AA', pads: ['techno', 'drop', 'badumtss', 'tromboneTriste',
       tool('mic', 'after', 'MICRO', 'MIC', '#E53935'), tool('fx', 'echo', 'ÉCHO', 'ECHO', '#00ACC1'),
       tool('fx', 'gate', 'HACHOIR', 'CHOPPER', '#8E24AA'), tool('fx', 'cut', 'CUT', 'CUT', '#EC407A')] },
-    { name: ['MUSIQUE', 'MUSIC'], color: '#43A047', pads: [tool('player', '', 'PLAYER', 'PLAYER', '#2E7D32')] }
+    { name: ['MUSIQUE', 'MUSIC'], color: '#43A047', pads: [tool('deck', '', 'LECTEUR', 'PLAYER', '#37474F'), null, null, null, null, null, tool('player', '', 'SPOTIFY', 'SPOTIFY', '#2E7D32')] }
   ];
 
   // Premier lancement / remise à zéro : synthétise les sons et les stocke
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck',
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', swipe: true, deck: { kind: 'all', key: '', vol: 0.8, fx: true },
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
       pg.pads.forEach(function (d, k) {
+        if (!d) return;
         if (typeof d === 'string') { jobs.push({ page: page, k: k, def: B.FACTORY[d] }); return; }
         var p = page.pads[k] = { id: B.uid('p'), type: d.type, name: d.name[en], color: d.color };
         if (d.type === 'mic') { p.micMode = d.micMode; p.denoise = 0.5; p.vol = 1; }
@@ -619,6 +626,9 @@
     }
     cfg.vibrate = raw.vibrate !== false;
     cfg.duck = B.DUCKS.indexOf(raw.duck) >= 0 ? raw.duck : 'duck';
+    cfg.swipe = raw.swipe !== false;
+    var dk = raw.deck && typeof raw.deck === 'object' ? raw.deck : {};
+    cfg.deck = { kind: B.DECK_KINDS.indexOf(dk.kind) >= 0 ? dk.kind : 'all', key: str(dk.key, '', 300), vol: num(dk.vol, 0.8, 0, 1), fx: dk.fx !== false };
     (raw.pages instanceof Array ? raw.pages : []).slice(0, B.MAX_PAGES).forEach(function (pg, k) {
       var page = B.newPage(k + 1);
       if (pg && typeof pg === 'object') {
@@ -627,9 +637,9 @@
         (pg.pads instanceof Array ? pg.pads : []).slice(0, B.SLOTS).forEach(function (p, i) {
           if (!p || typeof p !== 'object') return;
           var base = { id: B.uid('p'), type: 'sample', name: str(p.name, '', 24), color: color(p.color, B.COLORS[i % B.COLORS.length]) };
-          if (p.type === 'player') {
-            if (i % 2 || i > 4) return;
-            base.type = 'player';
+          if (B.ROWS[p.type]) {
+            if (i % 2 || i + 2 * B.ROWS[p.type] > B.SLOTS) return;
+            base.type = p.type;
           } else if (p.type === 'mic') {
             base.type = 'mic';
             base.micMode = p.micMode === 'live' ? 'live' : 'after';
@@ -659,7 +669,7 @@
           }
           page.pads[i] = base;
         });
-        // un player recouvre 2 x 2 cases
+        // un widget recouvre plusieurs cases
         page.pads.forEach(function (p, i) { if (p && B.cover(page, i) >= 0) page.pads[i] = null; });
       }
       cfg.pages.push(page);

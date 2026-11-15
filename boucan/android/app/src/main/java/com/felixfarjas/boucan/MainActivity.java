@@ -6,6 +6,12 @@ import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
 import android.content.ComponentName;
+import android.content.ContentUris;
+import android.content.res.AssetFileDescriptor;
+import android.database.Cursor;
+import android.provider.MediaStore;
+import android.util.Size;
+import android.webkit.WebResourceResponse;
 import android.graphics.Bitmap;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
@@ -39,9 +45,12 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.FilterInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -49,7 +58,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Boucan : une WebView plein écran qui affiche l'app embarquée dans les assets.
@@ -62,6 +73,9 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 1;
     private static final int REQ_SAVE = 2;
     private static final int REQ_MIC = 3;
+    private static final int REQ_MUSIC = 4;
+    /** Adresse fictive sous laquelle la page lit les fichiers de musique du téléphone. */
+    private static final String MUSIC_HOST = "boucan.music";
 
     private FrameLayout root;
     private WebView web;
@@ -207,6 +221,13 @@ public class MainActivity extends Activity {
         }
 
         @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            Uri u = request.getUrl();
+            if (u == null || !MUSIC_HOST.equals(u.getHost())) return null;
+            return serveMusic(u, request.getRequestHeaders());
+        }
+
+        @Override
         public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
             // Le moteur de rendu a été tué (mémoire) : on repart proprement.
             if (web != null) {
@@ -270,6 +291,10 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
+        if (request == REQ_MUSIC) {
+            if (web != null) web.evaluateJavascript("window.Boucan&&Boucan.deckPerm&&Boucan.deckPerm()", null);
+            return;
+        }
         if (request != REQ_MIC || micRequest == null) return;
         PermissionRequest r = micRequest;
         micRequest = null;
@@ -368,6 +393,131 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ------------------------------------------------- Fichiers de musique
+
+    private String musicPermission() {
+        return Build.VERSION.SDK_INT >= 33 ? "android.permission.READ_MEDIA_AUDIO" : android.Manifest.permission.READ_EXTERNAL_STORAGE;
+    }
+
+    private boolean musicAllowed() {
+        return Build.VERSION.SDK_INT < 23 || checkSelfPermission(musicPermission()) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Tous les morceaux du téléphone, en JSON : id, titre, artiste, album, dossier, n° de piste. */
+    @SuppressWarnings("deprecation")
+    private String listMusic() {
+        JSONArray out = new JSONArray();
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, new String[]{
+                    MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
+                    MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DATA, MediaStore.Audio.Media.TRACK
+            }, MediaStore.Audio.Media.IS_MUSIC + " != 0", null, null);
+            while (c != null && c.moveToNext()) {
+                JSONObject o = new JSONObject();
+                String artist = c.getString(2), path = c.getString(4), dir = "";
+                if (path != null) {
+                    File parent = new File(path).getParentFile();
+                    if (parent != null) dir = parent.getName();
+                }
+                o.put("id", c.getLong(0));
+                o.put("t", c.getString(1) == null ? "?" : c.getString(1));
+                o.put("a", artist == null || "<unknown>".equals(artist) ? "" : artist);
+                o.put("al", c.getString(3) == null ? "" : c.getString(3));
+                o.put("d", dir);
+                o.put("n", c.getInt(5));
+                out.put(o);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) c.close();
+        }
+        return out.toString();
+    }
+
+    /** Flux limité à un nombre d'octets (réponse à une requête partielle). */
+    private static final class Bounded extends FilterInputStream {
+        private long left;
+
+        Bounded(InputStream in, long left) {
+            super(in);
+            this.left = left;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (left <= 0) return -1;
+            int b = super.read();
+            if (b >= 0) left--;
+            return b;
+        }
+
+        @Override
+        public int read(byte[] buf, int off, int len) throws IOException {
+            if (left <= 0) return -1;
+            int n = super.read(buf, off, (int) Math.min(len, left));
+            if (n > 0) left -= n;
+            return n;
+        }
+    }
+
+    /** Sert à la page un morceau (/t/id) ou sa pochette (/a/id). Rien ne passe par le réseau. */
+    private WebResourceResponse serveMusic(Uri u, Map<String, String> req) {
+        Map<String, String> h = new HashMap<String, String>();
+        h.put("Access-Control-Allow-Origin", "*");
+        try {
+            List<String> seg = u.getPathSegments();
+            if (seg.size() != 2 || !musicAllowed()) throw new IOException("path");
+            Uri uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, Long.parseLong(seg.get(1)));
+            if ("a".equals(seg.get(0))) {
+                if (Build.VERSION.SDK_INT < 29) throw new IOException("art");
+                Bitmap b = getContentResolver().loadThumbnail(uri, new Size(256, 256), null);
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                b.compress(Bitmap.CompressFormat.JPEG, 82, out);
+                return new WebResourceResponse("image/jpeg", null, 200, "OK", h, new ByteArrayInputStream(out.toByteArray()));
+            }
+            AssetFileDescriptor afd = getContentResolver().openAssetFileDescriptor(uri, "r");
+            if (afd == null) throw new IOException("open");
+            long len = afd.getLength(), start = 0, end = len - 1;
+            InputStream in = afd.createInputStream();
+            String mime = getContentResolver().getType(uri), range = null;
+            if (req != null) {
+                for (Map.Entry<String, String> e : req.entrySet()) {
+                    if ("range".equalsIgnoreCase(e.getKey())) range = e.getValue();
+                }
+            }
+            boolean partial = false;
+            if (len > 0 && range != null && range.startsWith("bytes=")) {
+                String[] p = range.substring(6).split("-", 2);
+                try {
+                    if (p[0].length() > 0) start = Long.parseLong(p[0].trim());
+                    if (p.length > 1 && p[1].trim().length() > 0) end = Math.min(len - 1, Long.parseLong(p[1].trim()));
+                    partial = start >= 0 && start <= end;
+                } catch (NumberFormatException ignored) {
+                }
+                if (!partial) {
+                    start = 0;
+                    end = len - 1;
+                }
+            }
+            long skip = start;
+            while (skip > 0) {
+                long n = in.skip(skip);
+                if (n <= 0) break;
+                skip -= n;
+            }
+            h.put("Accept-Ranges", "bytes");
+            if (len > 0) {
+                h.put("Content-Length", String.valueOf(end - start + 1));
+                if (partial) h.put("Content-Range", "bytes " + start + "-" + end + "/" + len);
+            }
+            return new WebResourceResponse(mime == null ? "audio/mpeg" : mime, null, partial ? 206 : 200,
+                    partial ? "Partial Content" : "OK", h, len > 0 ? new Bounded(in, end - start + 1) : in);
+        } catch (Throwable e) {
+            return new WebResourceResponse("text/plain", null, 404, "Not Found", h, new ByteArrayInputStream(new byte[0]));
+        }
+    }
+
     // ----------------------------------------------------- Lecteur de musique
 
     /** Le lecteur à piloter : celui qui joue, sinon le plus récent. Lève SecurityException sans l'accès aux notifications. */
@@ -414,6 +564,22 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception ignored) {
             }
+        }
+
+        /** Morceaux du téléphone en JSON, ou "PERM" s'il faut d'abord l'autorisation. */
+        @JavascriptInterface
+        public String musicList() {
+            return musicAllowed() ? listMusic() : "PERM";
+        }
+
+        @JavascriptInterface
+        public void musicAsk() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (Build.VERSION.SDK_INT >= 23) requestPermissions(new String[]{musicPermission()}, REQ_MUSIC);
+                }
+            });
         }
 
         /** État du lecteur de musique en cours (Spotify ou autre), en JSON. */
