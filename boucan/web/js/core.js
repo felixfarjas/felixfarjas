@@ -5,14 +5,16 @@
 (function (B) {
   'use strict';
 
-  B.VERSION = '1.0';
+  B.VERSION = '1.1';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
   B.KEEP_SEC = 30;   // au-delà, on ne garde que la partie recadrée
   B.MAX_SEC = 600;   // durée max d'un son importé
   B.MAX_BYTES = 60 * 1024 * 1024;
-  B.FX = [['reverb', 'REVERB'], ['echo', 'ÉCHO'], ['filter', 'FILTRE'], ['mega', 'MÉGAPHONE']];
+  B.FX = ['reverb', 'echo', 'highcut', 'lowcut', 'mega', 'disto', 'flanger', 'gate'];
+  B.FX_DEFAULT = ['reverb', 'echo', 'highcut', 'lowcut'];
+  B.FADES = [0, 0.1, 0.5, 2];
   B.cfg = null;
 
   var uidN = 0;
@@ -188,53 +190,75 @@
       var d = ir.getChannelData(c);
       for (i = 0; i < n; i++) {
         var t = i / n;
-        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 3) * (i < 200 ? i / 200 : 1);
+        d[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.5) * (i < 200 ? i / 200 : 1);
       }
     }
     return ir;
   }
-  function driveCurve(k) {
+  function driveCurve(k, out) {
     var n = 1024, c = new Float32Array(n), i;
-    for (i = 0; i < n; i++) { var x = i * 2 / (n - 1) - 1; c[i] = Math.tanh(x * k) * 0.8; }
+    for (i = 0; i < n; i++) { var x = i * 2 / (n - 1) - 1; c[i] = Math.tanh(x * k) * out; }
     return c;
   }
 
+  /*
+   * Chaîne : voix -> bus -> coupe-bas -> coupe-haut -> [net | mégaphone | disto] -> mix
+   *   mix -> direct -> hachoir -> sortie        mix -> flanger -> hachoir
+   *   mix -> reverb -> sortie                   mix -> écho -> sortie
+   * sortie -> coupure (STOP) -> limiteur -> haut-parleur
+   */
   A.init = function () {
     var AC = window.AudioContext || window.webkitAudioContext, ctx;
     try { ctx = new AC({ latencyHint: 'interactive' }); } catch (e) { ctx = new AC(); }
     A.ctx = ctx;
+    function gain(v) { var g = ctx.createGain(); g.gain.value = v; return g; }
+    function filter(type, f, q) {
+      var b = ctx.createBiquadFilter();
+      b.type = type; b.frequency.value = f; b.Q.value = q || 0.7;
+      return b;
+    }
 
-    var bus = A.bus = ctx.createGain();
-    var lp = A.lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 20000; lp.Q.value = 0.7;
-
-    var clean = A.clean = ctx.createGain();
-    var mHp = ctx.createBiquadFilter(); mHp.type = 'highpass'; mHp.frequency.value = 600;
-    var mLp = ctx.createBiquadFilter(); mLp.type = 'lowpass'; mLp.frequency.value = 2800;
-    var shaper = ctx.createWaveShaper(); shaper.curve = driveCurve(6);
-    var mega = A.mega = ctx.createGain(); mega.gain.value = 0;
-    var mix = ctx.createGain();
-    var kill = A.kill = ctx.createGain();
+    var bus = A.bus = gain(1);
+    var hp = A.hp = filter('highpass', 20), lp = A.lp = filter('lowpass', 20000);
+    var clean = A.clean = gain(1), mix = gain(1), dry = A.dry = gain(1);
+    var mHp = filter('highpass', 600), mLp = filter('lowpass', 2800);
+    var mSh = ctx.createWaveShaper(); mSh.curve = driveCurve(6, 0.8);
+    var mega = A.mega = gain(0);
+    var dSh = ctx.createWaveShaper(); dSh.curve = driveCurve(25, 0.45);
+    var disto = A.disto = gain(0);
+    var trem = A.trem = gain(1), kill = A.kill = gain(1);
 
     var comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -10; comp.knee.value = 10; comp.ratio.value = 12;
     comp.attack.value = 0.002; comp.release.value = 0.2;
 
-    var revSend = A.revSend = ctx.createGain(); revSend.gain.value = 0;
-    var conv = ctx.createConvolver(); conv.buffer = impulse(ctx, 2.4);
+    var revSend = A.revSend = gain(0), conv = ctx.createConvolver();
+    conv.buffer = impulse(ctx, 3.2);
+    var eSend = A.eSend = gain(0), delay = ctx.createDelay(1), eLp = filter('lowpass', 3500), fb = A.fb = gain(0.35);
+    delay.delayTime.value = 0.32;
+    var fl = ctx.createDelay(0.05), flWet = A.flWet = gain(0), flFb = A.flFb = gain(0.3);
+    fl.delayTime.value = 0.004;
 
-    var dSend = A.dSend = ctx.createGain(); dSend.gain.value = 0;
-    var delay = ctx.createDelay(1); delay.delayTime.value = 0.32;
-    var dLp = ctx.createBiquadFilter(); dLp.type = 'lowpass'; dLp.frequency.value = 3500;
-    var fb = A.fb = ctx.createGain(); fb.gain.value = 0.3;
-
-    bus.connect(lp);
+    bus.connect(hp); hp.connect(lp);
     lp.connect(clean); clean.connect(mix);
-    lp.connect(mHp); mHp.connect(mLp); mLp.connect(shaper); shaper.connect(mega); mega.connect(mix);
-    mix.connect(kill);
+    lp.connect(mHp); mHp.connect(mLp); mLp.connect(mSh); mSh.connect(mega); mega.connect(mix);
+    lp.connect(dSh); dSh.connect(disto); disto.connect(mix);
+    mix.connect(dry); dry.connect(trem);
+    mix.connect(fl); fl.connect(flWet); flWet.connect(trem); fl.connect(flFb); flFb.connect(fl);
+    trem.connect(kill);
     mix.connect(revSend); revSend.connect(conv); conv.connect(kill);
-    mix.connect(dSend); dSend.connect(delay); delay.connect(dLp); dLp.connect(fb); fb.connect(delay); dLp.connect(kill);
+    mix.connect(eSend); eSend.connect(delay); delay.connect(eLp); eLp.connect(fb); fb.connect(delay); eLp.connect(kill);
     kill.connect(comp); comp.connect(ctx.destination);
+
+    // Oscillateurs lents : balayage du flanger, hachoir.
+    A.tremDepth = gain(0);
+    try {
+      var lfo = ctx.createOscillator(), lfoG = gain(0.0025);
+      lfo.frequency.value = 0.3; lfo.connect(lfoG); lfoG.connect(fl.delayTime); lfo.start(0);
+      var chop = ctx.createOscillator();
+      chop.type = 'square'; chop.frequency.value = 7;
+      chop.connect(A.tremDepth); A.tremDepth.connect(trem.gain); chop.start(0);
+    } catch (e) {}
   };
 
   A.resume = function () {
@@ -244,19 +268,31 @@
     }
   };
 
-  // Un seul effet actif à la fois ; a = dosage 0..1.
+  // Un seul effet actif à la fois ; a = dosage 0..1. À fond, l'effet est
+  // radical, comme sur une table de DJ.
   A.setFx = function (type, a) {
     var t = A.ctx.currentTime, tc = 0.03;
-    var rev = type === 'reverb' ? a : 0, ech = type === 'echo' ? a : 0;
-    var fil = type === 'filter' ? a : 0, meg = type === 'mega' ? a : 0;
+    function on(k) { return type === k ? a : 0; }
+    function set(p, v) { p.setTargetAtTime(v, t, tc); }
+    var rev = on('reverb'), ech = on('echo'), hc = on('highcut'), lc = on('lowcut');
+    var meg = on('mega'), dis = on('disto'), fla = on('flanger'), gat = on('gate');
     A.fxEcho = ech;
-    A.revSend.gain.setTargetAtTime(rev * 1.4, t, tc);
-    A.dSend.gain.setTargetAtTime(ech * 0.9, t, tc);
-    if (!A.killed) A.fb.gain.setTargetAtTime(0.3 + 0.45 * ech, t, tc);
-    A.lp.frequency.setTargetAtTime(20000 * Math.pow(0.011, fil), t, tc);
-    A.lp.Q.setTargetAtTime(0.7 + 5 * fil, t, tc);
-    A.mega.gain.setTargetAtTime(meg * 1.3, t, tc);
-    A.clean.gain.setTargetAtTime(1 - meg, t, tc);
+    // reverb : le son direct s'efface et s'assourdit, il ne reste presque que la queue
+    set(A.revSend.gain, 3.2 * Math.pow(rev, 0.8));
+    set(A.dry.gain, 1 - 0.88 * rev - 0.5 * ech);
+    set(A.eSend.gain, 1.2 * ech);
+    if (!A.killed) set(A.fb.gain, 0.35 + 0.5 * ech);
+    set(A.lp.frequency, 20000 * Math.pow(0.006, hc) * Math.pow(0.18, rev));
+    set(A.lp.Q, 0.7 + 7 * hc);
+    set(A.hp.frequency, 20 * Math.pow(400, lc));
+    set(A.hp.Q, 0.7 + 7 * lc);
+    set(A.mega.gain, 1.3 * meg);
+    set(A.disto.gain, dis);
+    set(A.clean.gain, 1 - meg - dis);
+    set(A.flWet.gain, fla);
+    set(A.flFb.gain, 0.3 + 0.6 * fla);
+    set(A.trem.gain, 1 - gat / 2);
+    set(A.tremDepth.gain, gat / 2);
   };
 
   function unkill() {
@@ -266,7 +302,7 @@
     var t = A.ctx.currentTime;
     A.kill.gain.cancelScheduledValues(t);
     A.kill.gain.setTargetAtTime(1, t, 0.004);
-    A.fb.gain.setTargetAtTime(0.3 + 0.45 * (A.fxEcho || 0), t, 0.01);
+    A.fb.gain.setTargetAtTime(0.35 + 0.5 * (A.fxEcho || 0), t, 0.01);
   }
 
   A.range = function (pad, buf) {
@@ -275,29 +311,36 @@
     return [s, e];
   };
 
-  A.play = function (pad) {
+  // from (optionnel) : position de départ dans le son, pour reprendre après une pause.
+  A.play = function (pad, from) {
     var buf = A.buffers[pad.sample];
     if (!buf) return null;
     A.resume();
     unkill();
-    if (A.voices[pad.id]) A.stop(pad.id, true);
+    if (A.voices[pad.id]) A.stop(pad.id, true, true);
     var ctx = A.ctx, now = ctx.currentTime, src = ctx.createBufferSource(), g = ctx.createGain();
     var rg = A.range(pad, buf), start = rg[0], end = rg[1], dur = end - start;
-    var vol = pad.vol === undefined ? 1 : pad.vol;
+    var at = typeof from === 'number' && from > start && from < end - 0.02 ? from : start, left = end - at;
+    var vol = pad.vol === undefined ? 1 : pad.vol, fi = pad.fadeIn || 0, fo = pad.fadeOut || 0;
     src.buffer = buf; src.connect(g); g.connect(A.bus);
-    if (start > 0.001) { g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + 0.004); }
+    if (!pad.loop) { fi = Math.min(fi, left / 2); fo = Math.min(fo, left / 2); }
+    if (fi > 0) { g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + fi); }
+    else if (at > 0.001) { g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(vol, now + 0.004); }
     else g.gain.setValueAtTime(vol, now);
     if (pad.loop) {
       src.loop = true; src.loopStart = start; src.loopEnd = end;
-      src.start(now, start);
+      src.start(now, at);
     } else {
-      if (end < buf.duration - 0.001 && dur > 0.03) {
-        g.gain.setValueAtTime(vol, now + dur - 0.008);
-        g.gain.linearRampToValueAtTime(0, now + dur);
+      if (fo > 0) {
+        g.gain.setValueAtTime(vol, now + left - fo);
+        g.gain.linearRampToValueAtTime(0, now + left);
+      } else if (end < buf.duration - 0.001 && left > 0.03) {
+        g.gain.setValueAtTime(vol, now + left - 0.008);
+        g.gain.linearRampToValueAtTime(0, now + left);
       }
-      src.start(now, start, dur);
+      src.start(now, at, left);
     }
-    var v = { id: pad.id, src: src, g: g, t0: now, dur: dur, loop: !!pad.loop };
+    var v = { id: pad.id, src: src, g: g, t0: now - (at - start), start: start, dur: dur, loop: !!pad.loop, rel: pad.fadeOut || 0 };
     A.voices[pad.id] = v;
     src.onended = function () {
       try { g.disconnect(); } catch (e) {}
@@ -310,15 +353,22 @@
     return v;
   };
 
-  A.stop = function (id, quiet) {
+  // Position de lecture d'une voix, en secondes dans le son.
+  A.pos = function (v) {
+    var gone = Math.max(0, A.ctx.currentTime - v.t0);
+    return v.start + (v.loop ? gone % v.dur : Math.min(gone, v.dur));
+  };
+
+  // fast : coupe net (STOP, relance) ; sinon le fondu de sortie de la case s'applique.
+  A.stop = function (id, quiet, fast) {
     var v = A.voices[id];
     if (!v) return;
     delete A.voices[id];
-    var now = A.ctx.currentTime;
+    var now = A.ctx.currentTime, rel = fast || !v.rel ? 0.03 : v.rel;
     try {
       v.g.gain.cancelScheduledValues(now);
-      v.g.gain.setTargetAtTime(0, now, 0.008);
-      v.src.stop(now + 0.05);
+      v.g.gain.setTargetAtTime(0, now, rel / 4);
+      v.src.stop(now + rel + 0.03);
     } catch (e) {}
     if (!quiet && A.onChange) A.onChange(id);
   };
@@ -326,14 +376,14 @@
   // Bouton STOP : coupe toutes les voix et les queues de reverb/écho.
   A.stopAll = function () {
     var ids = Object.keys(A.voices), t = A.ctx.currentTime;
-    ids.forEach(function (id) { A.stop(id); });
+    ids.forEach(function (id) { A.stop(id, false, true); });
     A.killed = true;
     A.kill.gain.cancelScheduledValues(t);
     A.kill.gain.setTargetAtTime(0, t, 0.008);
     A.fb.gain.cancelScheduledValues(t);
     A.fb.gain.setValueAtTime(0, t);
     if (A.killT) clearTimeout(A.killT);
-    A.killT = setTimeout(function () { A.killT = null; unkill(); }, 2600);
+    A.killT = setTimeout(function () { A.killT = null; unkill(); }, 3400);
   };
 
   A.load = function (id) {
@@ -391,7 +441,7 @@
   // Sons d'origine : synthétisés puis stockés (premier lancement / remise à zéro).
   B.buildFactory = function (onProgress) {
     var defs = B.FACTORY, i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, vibrate: true, cur: 0, pages: [] };
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_PAGES.forEach(function (pg) { cfg.pages.push({ name: pg.name, color: pg.color, pads: blankPads() }); });
     return new Promise(function (res, rej) {
       (function next() {
@@ -401,7 +451,7 @@
         D.put('samples', id, B.encodeWav([pcm], B.SR)).then(function () {
           cfg.pages[Math.floor(i / B.SLOTS)].pads[i % B.SLOTS] = {
             id: B.uid('p'), name: d.name, color: d.color, mode: d.mode, loop: !!d.loop,
-            vol: 1, sample: id, start: 0, end: pcm.length / B.SR
+            vol: 1, sample: id, start: 0, end: pcm.length / B.SR, fadeIn: 0, fadeOut: 0
           };
           i++;
           if (onProgress) onProgress(i, defs.length);
@@ -417,11 +467,17 @@
 
   // Remet d'aplomb une config lue (import, ancienne version, données abîmées).
   B.sanitize = function (raw, hasSample) {
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, vibrate: true, cur: 0, pages: [] };
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: [], lang: B.lang, vibrate: true, cur: 0, pages: [] };
     if (!raw || typeof raw !== 'object') raw = {};
+    if (raw.lang === 'fr' || raw.lang === 'en') cfg.lang = raw.lang;
+    // effets proposés par le bouton FX (toujours dans l'ordre de B.FX, jamais vide)
+    var want = raw.fxList instanceof Array ? raw.fxList : B.FX_DEFAULT;
+    B.FX.forEach(function (f) { if (want.indexOf(f) >= 0) cfg.fxList.push(f); });
+    if (!cfg.fxList.length) cfg.fxList = B.FX_DEFAULT.slice();
+    cfg.fx.type = cfg.fxList[0];
     if (raw.fx && typeof raw.fx === 'object') {
-      B.FX.forEach(function (f) { if (f[0] === raw.fx.type) cfg.fx.type = f[0]; });
-      cfg.fx.amt = num(raw.fx.amt, 0, 0, 1);
+      var ty = raw.fx.type === 'filter' ? 'highcut' : raw.fx.type; // nom de la version 1.0
+      if (cfg.fxList.indexOf(ty) >= 0) { cfg.fx.type = ty; cfg.fx.amt = num(raw.fx.amt, 0, 0, 1); }
     }
     cfg.vibrate = raw.vibrate !== false;
     (raw.pages instanceof Array ? raw.pages : []).slice(0, B.MAX_PAGES).forEach(function (pg, k) {
@@ -435,8 +491,9 @@
           page.pads[i] = {
             id: B.uid('p'), name: str(p.name, '', 24), color: color(p.color, B.COLORS[i % B.COLORS.length]),
             mode: p.mode === 'toggle' || p.mode === 'gate' ? p.mode : 'oneshot', loop: !!p.loop,
-            vol: num(p.vol, 1, 0, 2), sample: p.sample, start: num(p.start, 0, 0, 1e5),
-            end: typeof p.end === 'number' ? num(p.end, 0, 0, 1e5) : null
+            vol: num(p.vol, 1, 0, 1.5), sample: p.sample, start: num(p.start, 0, 0, 1e5),
+            end: typeof p.end === 'number' ? num(p.end, 0, 0, 1e5) : null,
+            fadeIn: num(p.fadeIn, 0, 0, 5), fadeOut: num(p.fadeOut, 0, 0, 5)
           };
         });
       }

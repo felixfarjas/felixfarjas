@@ -9,13 +9,8 @@
 
   var A = B.audio;
   var S = { edit: false, moving: null, sheets: [], ask: null };
-  var MODES = [['oneshot', 'ONE SHOT'], ['toggle', 'ON / OFF'], ['gate', 'PIANO']];
-  var MODE_TAG = { oneshot: 'ONE SHOT', toggle: 'ON / OFF', gate: 'PIANO' };
-  var MODE_HINT = {
-    oneshot: 'Un appui joue le son en entier. Un nouvel appui le relance du début.',
-    toggle: 'Un appui lance le son, un autre appui l\'arrête.',
-    gate: 'Le son joue tant que le doigt reste appuyé.'
-  };
+  function t(k, a) { return B.t(k, a); }
+  function modes() { return ['oneshot', 'toggle', 'gate'].map(function (m) { return [m, t('mode.' + m)]; }); }
   var NATIVE = !!window.BoucanNative;
   var pads = [], el = {};
   var held = {}; // identifiant du doigt -> case tenue
@@ -46,8 +41,17 @@
     return 'rgb(' + Math.round(r * k) + ',' + Math.round(g * k) + ',' + Math.round(b * k) + ')';
   }
   function page() { return B.cfg.pages[B.cfg.cur]; }
+  // Le navigateur refuse navigator.vibrate() sur un simple "touchstart" :
+  // sur Android la vibration passe donc par le natif.
   function buzz() {
-    if (B.cfg && B.cfg.vibrate && navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
+    if (!B.cfg || !B.cfg.vibrate) return;
+    try {
+      if (NATIVE && window.BoucanNative.vibrate) window.BoucanNative.vibrate(22);
+      else if (navigator.vibrate) navigator.vibrate(22);
+    } catch (e) {}
+  }
+  function tellLang() {
+    try { if (NATIVE && window.BoucanNative.setLang) window.BoucanNative.setLang(B.lang); } catch (e) {}
   }
 
   // ====================== Messages ======================
@@ -62,14 +66,14 @@
   function idle() { el.busy.style.display = 'none'; }
   function ask(msg, yes, cb) {
     var wrap = h('div', 'ask'), box = h('div', 'askBox'), row = h('div', 'row');
-    var no = h('button', 'btn', 'ANNULER'), ok = h('button', 'btn danger', yes);
+    var no = h('button', 'btn', t('cancel')), ok = h('button', 'btn danger', yes);
     function close() { if (S.ask === close) S.ask = null; if (wrap.parentNode) document.body.removeChild(wrap); }
     on(no, 'click', close);
     on(ok, 'click', function () { close(); cb(); });
     add(document.body, add(wrap, add(box, h('div', 'askTxt', msg), add(row, no, ok))));
     S.ask = close;
   }
-  B.onError = function (msg) { toast(msg, 3500); };
+  B.onError = function () { toast(t('saveFail'), 3500); };
 
   // ====================== Rendu ======================
   function buildGrid() {
@@ -121,7 +125,7 @@
     p.inn.style.boxShadow = v ? 'inset 0 0 0 6px ' + fg : '';
     p.name.className = 'name' + (longest > 11 || nm.length > 22 ? ' s3' : longest > 8 || nm.length > 14 ? ' s2' : '');
     p.name.textContent = nm;
-    p.tag.textContent = MODE_TAG[pad.mode] + (pad.loop ? ' · BOUCLE' : '');
+    p.tag.textContent = t('mode.' + pad.mode) + (pad.loop ? ' · ' + t('loop') : '');
     setProg(p, v);
   }
 
@@ -139,7 +143,7 @@
       var inn = h('div', 'tabIn', pg.name || String(k + 1));
       t.setAttribute('data-k', k);
       if (k === B.cfg.cur) { inn.style.background = pg.color; inn.style.color = ink(pg.color); }
-      else inn.style.borderTopColor = pg.color;
+      else inn.style.borderBottomColor = pg.color;
       add(el.tabs, add(t, inn));
     });
     if (S.edit && n < B.MAX_PAGES) {
@@ -149,22 +153,18 @@
     }
   }
 
-  function fxName() {
-    var t = B.cfg.fx.type, out = 'REVERB';
-    B.FX.forEach(function (f) { if (f[0] === t) out = f[1]; });
-    return out;
-  }
   function renderFx() {
-    el.fxLbl.textContent = fxName();
+    el.fxLbl.textContent = t('fx.' + B.cfg.fx.type);
     el.fxFill.style.width = (B.cfg.fx.amt * 100) + '%';
     el.fxFill.style.borderRightWidth = B.cfg.fx.amt > 0 ? '5px' : '0';
   }
   function renderHint() {
-    el.hint.textContent = S.moving ? 'TOUCHE LA CASE DE DESTINATION' : 'ÉDITION · TOUCHE UNE CASE OU UNE PAGE';
+    el.hint.textContent = t(S.moving ? 'bar.move' : 'bar.edit');
   }
   function renderAll() {
     document.body.className = S.edit ? 'editing' : '';
-    el.editLbl.textContent = S.edit ? 'OK' : 'ÉDIT';
+    el.editLbl.textContent = S.edit ? 'OK' : t('edit');
+    el.menuBtn.textContent = t('menu');
     renderHint(); renderFx(); renderGrid(); renderTabs();
   }
 
@@ -172,6 +172,7 @@
     var pg = page().pads, i;
     for (i = 0; i < B.SLOTS; i++) if (pg[i] && pg[i].id === id) renderPad(i);
     renderTabs();
+    if (S.onVoice) S.onVoice(id);
   };
 
   // ====================== Jeu ======================
@@ -300,10 +301,9 @@
     slider(el.fx, function (v) { setFx(B.cfg.fx.type, v); });
     press(el.fxBtn, function () {
       // Changer d'effet remet le dosage à zéro : jamais de surprise sonore.
-      var t = B.cfg.fx.type, k = 0;
-      B.FX.forEach(function (f, n) { if (f[0] === t) k = n; });
+      var list = B.cfg.fxList, k = Math.max(0, list.indexOf(B.cfg.fx.type));
       buzz();
-      setFx(B.FX[(k + 1) % B.FX.length][0], 0);
+      setFx(list[(k + 1) % list.length], 0);
     });
 
     // ÉDIT : appui long pour entrer (pas d'entrée par accident), simple appui pour sortir.
@@ -311,13 +311,13 @@
     function holdStart() {
       if (S.edit) { setEdit(false); return; }
       el.editBtn.className = 'tbtn holding';
-      holdT = setTimeout(function () { holdT = null; el.editBtn.className = 'tbtn'; buzz(); setEdit(true); }, 550);
+      holdT = setTimeout(function () { holdT = null; el.editBtn.className = 'tbtn'; buzz(); setEdit(true); }, 275);
     }
     function holdEnd() {
       if (!holdT) return;
       clearTimeout(holdT); holdT = null;
       el.editBtn.className = 'tbtn';
-      toast('Maintenir appuyé pour éditer', 1400);
+      toast(t('hold'), 1400);
     }
     on(el.editBtn, 'touchstart', function (ev) { ev.preventDefault(); holdStart(); });
     on(el.editBtn, 'touchend', holdEnd);
@@ -347,7 +347,7 @@
     pickAudio(function (res, name) {
       var tr = A.autoTrim(res.buffer);
       pg.pads[i] = { id: B.uid('p'), name: name, color: B.COLORS[i % B.COLORS.length], mode: 'oneshot', loop: false,
-        vol: 1, sample: res.id, start: tr[0], end: tr[1] };
+        vol: 1, sample: res.id, start: tr[0], end: tr[1], fadeIn: 0, fadeOut: 0 };
       B.saveNow();
       renderAll();
       editPad(B.cfg.pages.indexOf(pg), i);
@@ -378,14 +378,14 @@
   }
   function pickAudio(cb) {
     pick(el.fileAudio, function (f) {
-      if (f.size > B.MAX_BYTES) { toast('Fichier trop lourd (60 Mo max)', 3500); return; }
-      busy('IMPORT DU SON…');
+      if (f.size > B.MAX_BYTES) { toast(t('tooHeavy'), 3500); return; }
+      busy(t('importing'));
       readFile(f).then(A.importAudio).then(function (res) {
         idle();
         cb(res, cleanName(f.name));
       }, function (e) {
         idle();
-        toast(e && e.tooLong ? 'Son trop long (10 minutes max)' : 'Format audio non reconnu', 3500);
+        toast(t(e && e.tooLong ? 'tooLong' : 'badAudio'), 3500);
       });
     });
   }
@@ -469,7 +469,7 @@
 
   // Forme d'onde avec deux poignées (début / fin).
   function waveform(canvas, pad, changed) {
-    var buf, W = 0, H = 0, peaks = null, drag = null, dpr = window.devicePixelRatio || 1;
+    var buf, W = 0, H = 0, peaks = null, drag = null, headAt = null, dpr = window.devicePixelRatio || 1;
     function compute() {
       buf = A.buffers[pad.sample];
       W = canvas.width = Math.max(50, Math.floor(canvas.clientWidth * dpr));
@@ -502,6 +502,10 @@
       g.fillStyle = '#FDD835';
       g.fillRect(xs - hw / 2, 0, hw, H); g.fillRect(xs, 0, 14 * dpr, 14 * dpr);
       g.fillRect(xe - hw / 2, 0, hw, H); g.fillRect(xe - 14 * dpr, H - 14 * dpr, 14 * dpr, 14 * dpr);
+      if (headAt !== null) {
+        g.fillStyle = '#E53935';
+        g.fillRect(headAt / buf.duration * W - dpr, 0, 2 * dpr, H);
+      }
     }
     function setEdge(which, t) {
       if (!buf) return;
@@ -527,7 +531,13 @@
     on(window, 'mousemove', function (ev) { if (drag && S.sheets.length) setEdge(drag, pos(ev.clientX)); });
     on(window, 'mouseup', function () { drag = null; });
     return {
-      reload: function () { compute(); draw(); },
+      reload: function () { headAt = null; compute(); draw(); },
+      // tête de lecture (secondes dans le son, ou null pour la cacher)
+      head: function (sec) {
+        if (sec === undefined) sec = null;
+        if (sec === headAt) return;
+        headAt = sec; draw();
+      },
       nudge: function (which, dt) {
         if (!buf) return;
         var rg = A.range(pad, buf);
@@ -551,82 +561,115 @@
   function editPad(pi, i) {
     var pg = B.cfg.pages[pi], pad = pg.pads[i];
     if (!pad) return;
+    var pausedAt = null, raf = null, wave, playBtn, playLbl, playIco;
     function show() { if (pi === B.cfg.cur) renderPad(i); B.save(); }
+    function halt() { pausedAt = null; A.stop(pad.id, false, true); }
+    function playShow() {
+      var on = !!A.voices[pad.id];
+      playIco.className = on ? 'ico pause' : 'ico play';
+      playLbl.textContent = t(on ? 'pause' : 'play');
+    }
+    // Tête de lecture : redessinée à chaque image tant que la feuille est ouverte.
+    function tick() {
+      var v = A.voices[pad.id];
+      wave.head(v ? A.pos(v) : pausedAt);
+      raf = window.requestAnimationFrame(tick);
+    }
 
-    sheet('CASE ' + (i + 1), function (body, sh) {
-      sec(body, 'NOM', field(pad.name, 24, function (v) { pad.name = v; show(); }));
-      sec(body, 'COULEUR', swatches(pad.color, function (c) { pad.color = c; show(); }));
-
-      var hint = h('div', 'note', MODE_HINT[pad.mode]);
-      var loop = h('button', 'btn gap');
-      function loopLbl() { loop.textContent = 'BOUCLE : ' + (pad.loop ? 'OUI' : 'NON'); loop.className = 'btn gap' + (pad.loop ? ' on' : ''); }
-      loopLbl();
-      on(loop, 'click', function () { A.stop(pad.id); pad.loop = !pad.loop; loopLbl(); show(); });
-      sec(body, 'DÉCLENCHEMENT', choice(MODES, pad.mode, function (m) {
-        A.stop(pad.id); pad.mode = m; hint.textContent = MODE_HINT[m]; show();
-      }), hint, loop);
-
-      var vol = h('div', 'slider'), vFill = h('div', 'fill'), vLbl = h('div', 'lbl');
-      function volShow() { vFill.style.width = (pad.vol / 2 * 100) + '%'; vLbl.textContent = Math.round(pad.vol * 100) + ' %'; }
-      volShow();
-      slider(vol, function (v) {
-        pad.vol = Math.round(v * 40) / 20;
-        var cur = A.voices[pad.id];
-        if (cur) cur.g.gain.setTargetAtTime(pad.vol, A.ctx.currentTime, 0.02);
-        volShow(); B.save();
-      });
-      sec(body, 'VOLUME', add(vol, vFill, vLbl));
-
-      var canvas = h('canvas', 'wave'), tS = h('div', 'time'), tE = h('div', 'time'), keep = h('div', 'note');
-      function times() {
-        var buf = A.buffers[pad.sample];
-        if (!buf) { tS.textContent = tE.textContent = '—'; keep.textContent = ''; return; }
-        var rg = A.range(pad, buf);
-        tS.textContent = 'DÉBUT ' + rg[0].toFixed(2) + ' s';
-        tE.textContent = 'FIN ' + rg[1].toFixed(2) + ' s';
-        keep.textContent = 'Durée jouée : ' + (rg[1] - rg[0]).toFixed(2) + ' s. Glisse sur l\'onde pour recadrer, − et + pour ajuster.' +
-          (buf.duration > B.KEEP_SEC ? ' Son long : à la fermeture, seule la partie recadrée est conservée.' : '');
-      }
-      var wave = waveform(canvas, pad, function () { A.stop(pad.id); times(); B.save(); });
-      function nudge(which, dt, lbl) {
-        var b = h('button', 'btn nudge', lbl);
-        repeat(b, function () { wave.nudge(which, dt); });
-        return b;
-      }
-      var listen = h('button', 'btn gap', 'ÉCOUTER');
-      on(listen, 'click', function () { if (A.voices[pad.id]) A.stop(pad.id); else A.play(pad); });
-      var rowS = add(h('div', 'row'), nudge('start', -0.01, '−'), tS, nudge('start', 0.01, '+'));
-      var rowE = add(h('div', 'row'), nudge('end', -0.01, '−'), tE, nudge('end', 0.01, '+'));
-      rowS.style.marginTop = rowE.style.marginTop = '8px';
-      sec(body, 'RECADRAGE', canvas, rowS, rowE, listen, keep);
-
-      var change = h('button', 'btn', 'CHANGER LE SON'), move = h('button', 'btn gap', 'DÉPLACER LA CASE'), clear = h('button', 'btn gap danger', 'VIDER LA CASE');
+    sheet(t('pad') + ' ' + (i + 1), function (body, sh) {
+      var change = h('button', 'btn accent', t('change'));
       on(change, 'click', function () {
         pickAudio(function (res, name) {
-          A.stop(pad.id);
+          halt();
           var tr = A.autoTrim(res.buffer);
           pad.sample = res.id; pad.start = tr[0]; pad.end = tr[1];
           if (!pad.name) pad.name = name;
           wave.reload(); times(); show();
         });
       });
+      sec(body, '', change);
+
+      sec(body, t('name'), field(pad.name, 24, function (v) { pad.name = v; show(); }));
+      sec(body, t('color'), swatches(pad.color, function (c) { pad.color = c; show(); }));
+
+      var hint = h('div', 'note', t('hint.' + pad.mode));
+      var loop = h('button', 'btn gap');
+      function loopLbl() { loop.textContent = t(pad.loop ? 'loopOn' : 'loopOff'); loop.className = 'btn gap' + (pad.loop ? ' on' : ''); }
+      loopLbl();
+      on(loop, 'click', function () { halt(); pad.loop = !pad.loop; loopLbl(); show(); });
+      sec(body, t('trigger'), choice(modes(), pad.mode, function (m) {
+        halt(); pad.mode = m; hint.textContent = t('hint.' + m); show();
+      }), hint, loop);
+
+      var canvas = h('canvas', 'wave'), tS = h('div', 'time'), tE = h('div', 'time'), keep = h('div', 'note');
+      function times() {
+        var buf = A.buffers[pad.sample];
+        if (!buf) { tS.textContent = tE.textContent = '—'; keep.textContent = ''; return; }
+        var rg = A.range(pad, buf);
+        tS.textContent = t('start') + ' ' + rg[0].toFixed(2) + ' s';
+        tE.textContent = t('end') + ' ' + rg[1].toFixed(2) + ' s';
+        keep.textContent = t('cropNote', (rg[1] - rg[0]).toFixed(2)) + (buf.duration > B.KEEP_SEC ? t('keepNote') : '');
+      }
+      wave = waveform(canvas, pad, function () { halt(); times(); B.save(); });
+      function nudge(which, dt, lbl) {
+        var b = h('button', 'btn nudge', lbl);
+        repeat(b, function () { wave.nudge(which, dt); });
+        return b;
+      }
+      playBtn = h('button', 'btn gap playBtn'); playIco = h('span', 'ico play'); playLbl = h('span');
+      add(playBtn, playIco, playLbl);
+      on(playBtn, 'click', function () {
+        var v = A.voices[pad.id];
+        if (v) { pausedAt = A.pos(v); A.stop(pad.id, false, true); }
+        else { var from = pausedAt; pausedAt = null; A.play(pad, from); }
+      });
+      var rowS = add(h('div', 'row'), nudge('start', -0.01, '−'), tS, nudge('start', 0.01, '+'));
+      var rowE = add(h('div', 'row'), nudge('end', -0.01, '−'), tE, nudge('end', 0.01, '+'));
+      rowS.style.marginTop = rowE.style.marginTop = '8px';
+      sec(body, t('crop'), canvas, playBtn, rowS, rowE, keep);
+
+      function fades(key) {
+        return choice(B.FADES.map(function (f) { return [f, f ? f + ' s' : t('none')]; }), pad[key] || 0, function (f) {
+          halt(); pad[key] = f; B.save();
+        });
+      }
+      sec(body, t('fadeIn'), fades('fadeIn'));
+      sec(body, t('fadeOut'), fades('fadeOut'));
+
+      var vol = h('div', 'slider slim'), vFill = h('div', 'fill'), vLbl = h('div', 'lbl');
+      function volShow() { vFill.style.width = (pad.vol / 1.5 * 100) + '%'; vLbl.textContent = Math.round(pad.vol * 100) + ' %'; }
+      volShow();
+      slider(vol, function (v) {
+        v = Math.round(v * 30) / 20;
+        pad.vol = Math.abs(v - 1) <= 0.1 ? 1 : v; // aimanté à 100 %
+        var cur = A.voices[pad.id];
+        if (cur) cur.g.gain.setTargetAtTime(pad.vol, A.ctx.currentTime, 0.02);
+        volShow(); B.save();
+      });
+      sec(body, t('volume'), add(vol, vFill, vLbl));
+
+      var move = h('button', 'btn', t('move')), clear = h('button', 'btn gap danger', t('clear'));
       on(move, 'click', function () {
         sh.close();
         S.moving = { pg: pi, i: i, pad: pad };
         renderAll();
       });
       on(clear, 'click', function () {
-        ask('Vider la case « ' + (pad.name || i + 1) + ' » ?', 'VIDER', function () {
-          A.stop(pad.id);
+        ask(t('askClear', pad.name || i + 1), t('doClear'), function () {
+          halt();
           pg.pads[i] = null;
           sh.close();
         });
       });
-      sec(body, 'SON', change, move, clear);
+      sec(body, t('padSec'), move, clear);
 
-      wave.reload(); times();
+      S.onVoice = function (id) { if (id === pad.id) { if (!A.voices[id] && pausedAt === null) wave.head(null); playShow(); } };
+      wave.reload(); times(); playShow();
+      raf = window.requestAnimationFrame(tick);
     }, function () {
-      A.stop(pad.id);
+      S.onVoice = null;
+      if (raf) window.cancelAnimationFrame(raf);
+      A.stop(pad.id, false, true);
       var still = pg.pads[i] === pad;
       (still ? finalizePad(pad) : Promise.resolve()).then(function () { return B.saveNow(); }).then(B.gc)['catch'](function () {});
       renderAll();
@@ -643,10 +686,10 @@
 
   function editPage(k) {
     var pg = B.cfg.pages[k];
-    sheet('PAGE ' + (k + 1), function (body, sh) {
-      sec(body, 'NOM', field(pg.name, 12, function (v) { pg.name = v; renderTabs(); B.save(); }));
-      sec(body, 'COULEUR', swatches(pg.color, function (c) { pg.color = c; renderGrid(); renderTabs(); B.save(); }));
-      var left = h('button', 'btn', '← À GAUCHE'), right = h('button', 'btn', 'À DROITE →');
+    sheet(t('page') + ' ' + (k + 1), function (body, sh) {
+      sec(body, t('name'), field(pg.name, 12, function (v) { pg.name = v; renderTabs(); B.save(); }));
+      sec(body, t('color'), swatches(pg.color, function (c) { pg.color = c; renderGrid(); renderTabs(); B.save(); }));
+      var left = h('button', 'btn', t('left')), right = h('button', 'btn', t('right'));
       function shift(d) {
         var cur = B.cfg.pages.indexOf(pg), to = cur + d;
         if (to < 0 || to >= B.cfg.pages.length) return;
@@ -657,19 +700,19 @@
       }
       on(left, 'click', function () { shift(-1); });
       on(right, 'click', function () { shift(1); });
-      sec(body, 'ORDRE', add(h('div', 'row'), left, right));
-      var del = h('button', 'btn danger', 'SUPPRIMER LA PAGE');
+      sec(body, t('order'), add(h('div', 'row'), left, right));
+      var del = h('button', 'btn danger', t('delPage'));
       on(del, 'click', function () {
-        if (B.cfg.pages.length < 2) { toast('Il faut garder au moins une page'); return; }
-        ask('Supprimer la page « ' + pg.name + ' » et ses sons ?', 'SUPPRIMER', function () {
-          pg.pads.forEach(function (p) { if (p) A.stop(p.id); });
+        if (B.cfg.pages.length < 2) { toast(t('keepOne')); return; }
+        ask(t('askDelPage', pg.name), t('doDel'), function () {
+          pg.pads.forEach(function (p) { if (p) A.stop(p.id, false, true); });
           B.cfg.pages.splice(B.cfg.pages.indexOf(pg), 1);
           B.cfg.cur = Math.min(B.cfg.cur, B.cfg.pages.length - 1);
           sh.close();
           B.saveNow().then(B.gc);
         });
       });
-      sec(body, 'SUPPRESSION', del);
+      sec(body, t('del'), del);
     }, renderAll);
   }
 
@@ -694,45 +737,46 @@
   }
 
   function doExport(action) {
-    busy('PRÉPARATION DU FICHIER…');
+    busy(t('makingFile'));
     setTimeout(function () {
       (NATIVE ? B.nativeExport(action) : B.webExport()).then(function () {
         idle();
-        if (!NATIVE) toast('Config téléchargée');
+        if (!NATIVE) toast(t('downloaded'));
       }, function (e) {
         idle();
-        toast('Export impossible : ' + (e && e.message || e), 4000);
+        toast(t('exportFail') + (e && e.message || e), 4000);
       });
     }, 60);
   }
 
   function doImport() {
     pick(el.fileConfig, function (f) {
-      busy('LECTURE DU FICHIER…');
+      busy(t('readingFile'));
       readFile(f).then(function (ab) {
         var parsed = B.parseExport(ab);
         idle();
-        ask('Remplacer toute la config actuelle par celle de ce fichier ?', 'REMPLACER', function () {
-          busy('IMPORT DE LA CONFIG…');
+        ask(t('askImport'), t('doImport'), function () {
+          busy(t('importingCfg'));
           B.applyImport(parsed).then(function () {
+            B.lang = B.cfg.lang; tellLang();
             A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
             closeSheets();
             S.edit = false; S.moving = null;
             renderAll(); idle();
-            toast('Config importée');
+            toast(t('imported'));
             return loadBuffers();
-          })['catch'](function (e) { idle(); toast('Import impossible : ' + (e && e.message || e), 4000); });
+          })['catch'](function (e) { idle(); toast(t('importFail') + (e && e.message || e), 4000); });
         });
-      })['catch'](function () { idle(); toast('Ce fichier n\'est pas une config Boucan', 3500); });
+      })['catch'](function () { idle(); toast(t('notBoucan'), 3500); });
     });
   }
 
   function factoryReset() {
-    busy('PRÉPARATION DES SONS…');
+    busy(t('preparing') + '…');
     A.stopAll();
     A.buffers = {};
     return B.db.clear('samples').then(function () {
-      return B.buildFactory(function (i, n) { busy('PRÉPARATION DES SONS ' + i + '/' + n); });
+      return B.buildFactory(function (i, n) { busy(t('preparing') + ' ' + i + '/' + n); });
     }).then(function (cfg) {
       B.cfg = cfg;
       return B.saveNow();
@@ -740,41 +784,70 @@
   }
 
   function openMenu() {
-    sheet('BOUCAN', function (body) {
+    sheet('BOUCAN', function (body, sh) {
       function btn(label, cls, fn) { var b = h('button', 'btn gap' + (cls ? ' ' + cls : ''), label); on(b, 'click', fn); return b; }
       if (NATIVE) {
-        sec(body, 'TRANSFÉRER SUR UN AUTRE TÉLÉPHONE',
-          btn('ENVOYER LA CONFIG', '', function () { doExport('share'); }),
-          btn('ENREGISTRER DANS UN FICHIER', '', function () { doExport('save'); }),
-          btn('IMPORTER UNE CONFIG', '', doImport),
-          h('div', 'note', 'Le fichier .boucan contient toutes les pages, les réglages et les sons. Sur l\'autre téléphone : MENU, puis IMPORTER UNE CONFIG.'));
+        sec(body, t('transfer'),
+          btn(t('send'), '', function () { doExport('share'); }),
+          btn(t('saveFile'), '', function () { doExport('save'); }),
+          btn(t('importCfg'), '', doImport),
+          h('div', 'note', t('transferNote')));
       } else {
-        sec(body, 'TRANSFÉRER SUR UN AUTRE TÉLÉPHONE',
-          btn('EXPORTER LA CONFIG', '', function () { doExport('save'); }),
-          btn('IMPORTER UNE CONFIG', '', doImport),
-          h('div', 'note', 'Le fichier .boucan contient toutes les pages, les réglages et les sons.'));
+        sec(body, t('transfer'),
+          btn(t('exportCfg'), '', function () { doExport('save'); }),
+          btn(t('importCfg'), '', doImport),
+          h('div', 'note', t('transferNote')));
       }
+
+      // Effets proposés par le bouton FX.
+      var fxBox = h('div', 'sw two');
+      B.FX.forEach(function (f) {
+        var cell = h('div'), b = h('button', 'btn', t('fx.' + f));
+        function paint() { b.className = 'btn' + (B.cfg.fxList.indexOf(f) >= 0 ? ' on' : ''); }
+        paint();
+        on(b, 'click', function () {
+          var k = B.cfg.fxList.indexOf(f);
+          if (k >= 0) {
+            if (B.cfg.fxList.length < 2) { toast(t('keepFx')); return; }
+            B.cfg.fxList.splice(k, 1);
+            if (B.cfg.fx.type === f) setFx(B.cfg.fxList[0], 0);
+          } else {
+            B.cfg.fxList = B.FX.filter(function (x) { return x === f || B.cfg.fxList.indexOf(x) >= 0; });
+          }
+          paint(); B.save();
+        });
+        add(fxBox, add(cell, b));
+      });
+      sec(body, t('fxList'), fxBox, h('div', 'note', t('fxNote')));
+
+      sec(body, t('lang'), choice(B.LANGS, B.lang, function (l) {
+        B.lang = B.cfg.lang = l;
+        B.save(); tellLang();
+        sh.close(); renderAll(); openMenu();
+      }));
+
       var vib = btn('', '', function () { B.cfg.vibrate = !B.cfg.vibrate; vibLbl(); B.save(); buzz(); });
-      function vibLbl() { vib.textContent = 'VIBRATION AU TOUCHER : ' + (B.cfg.vibrate ? 'OUI' : 'NON'); }
+      function vibLbl() { vib.textContent = t(B.cfg.vibrate ? 'vibOn' : 'vibOff'); vib.className = 'btn' + (B.cfg.vibrate ? ' on' : ''); }
       vibLbl();
-      sec(body, 'RÉGLAGES', vib);
-      sec(body, 'REMISE À ZÉRO', btn('REMETTRE LES SONS D\'ORIGINE', 'danger', function () {
-        ask('Effacer toutes les pages et tous les sons importés, et remettre les 16 sons d\'origine ?', 'REMETTRE À ZÉRO', function () {
+      sec(body, t('settings'), vib);
+
+      sec(body, t('reset'), btn(t('resetBtn'), 'danger', function () {
+        ask(t('askReset'), t('doReset'), function () {
           factoryReset().then(function () {
             A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
             closeSheets();
             S.edit = false;
             renderAll(); idle();
             return loadBuffers();
-          })['catch'](function (e) { idle(); toast('Erreur : ' + (e && e.message || e), 4000); });
+          })['catch'](function (e) { idle(); toast(t('error') + (e && e.message || e), 4000); });
         });
       }));
-      add(body, h('div', 'note', 'Boucan ' + B.VERSION + ' — sons d\'origine synthétisés, mélodies du domaine public.'));
+      add(body, h('div', 'note', t('about', B.VERSION)));
     });
   }
 
   // ====================== Ponts natifs (Android) ======================
-  B.nativeMsg = function (msg) { idle(); if (msg) toast(msg, 3000); };
+  B.nativeMsg = function (key) { idle(); if (key) toast(t('n.' + key), 3000); };
   // Bouton retour : vrai si l'app a consommé l'appui.
   B.back = function () {
     if (S.ask) { S.ask(); return true; }
@@ -792,24 +865,25 @@
       .forEach(function (id) { el[id] = $(id); });
     el.fxFill = el.fx.querySelector('.fill');
     buildGrid();
-    try { A.init(); } catch (e) { fatal('Audio indisponible sur cet appareil'); return; }
+    try { A.init(); } catch (e) { fatal(t('noAudio')); return; }
     on(document, 'touchstart', A.resume);
     on(document, 'visibilitychange', function () { if (!document.hidden) A.resume(); });
 
     B.db.open().then(function () {
       return B.db.get('kv', 'config');
     }).then(function (raw) {
-      if (raw && raw.pages && raw.pages.length) { B.cfg = B.sanitize(raw); return null; }
+      if (raw && raw.pages && raw.pages.length) { B.cfg = B.sanitize(raw); B.lang = B.cfg.lang; return null; }
       return factoryReset();
     }).then(function () {
       bindPlay();
+      tellLang();
       A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
       renderAll();
       idle();
-      if (B.volatile) toast('Stockage indisponible : rien ne sera gardé à la fermeture', 6000);
+      if (B.volatile) toast(t('noStore'), 6000);
       return loadBuffers();
     })['catch'](function (e) {
-      fatal('Erreur au démarrage : ' + (e && e.message || e));
+      fatal(t('bootFail') + (e && e.message || e));
     });
   }
 

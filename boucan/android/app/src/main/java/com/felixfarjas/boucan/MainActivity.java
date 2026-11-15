@@ -12,6 +12,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.util.Base64;
 import android.view.View;
 import android.view.ViewGroup;
@@ -56,6 +58,8 @@ public class MainActivity extends Activity {
     private OutputStream exportOut;
     private boolean exportFailed;
     private long lastBack;
+    private volatile boolean french = true;
+    private Vibrator vibrator;
 
     @Override
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
@@ -63,6 +67,7 @@ public class MainActivity extends Activity {
         super.onCreate(state);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
+        vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
@@ -137,7 +142,7 @@ public class MainActivity extends Activity {
                     finish();
                 } else {
                     lastBack = now;
-                    Toast.makeText(MainActivity.this, "Encore une fois pour quitter", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, french ? "Encore une fois pour quitter" : "Press back again to quit", Toast.LENGTH_SHORT).show();
                 }
             }
         });
@@ -154,6 +159,7 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    /** Message pour la page : une clé de texte (traduite côté page), ou "" pour seulement lever l'attente. */
     private void tell(final String msg) {
         runOnUiThread(new Runnable() {
             @Override
@@ -204,11 +210,11 @@ public class MainActivity extends Activity {
             pick.addCategory(Intent.CATEGORY_OPENABLE);
             pick.setType(audio ? "audio/*" : "*/*");
             try {
-                startActivityForResult(Intent.createChooser(pick, audio ? "Choisir un son" : "Choisir un fichier .boucan"), REQ_FILE);
+                startActivityForResult(Intent.createChooser(pick, audio ? (french ? "Choisir un son" : "Pick a sound") : (french ? "Choisir un fichier .boucan" : "Pick a .boucan file")), REQ_FILE);
             } catch (ActivityNotFoundException e) {
                 fileCallback = null;
                 callback.onReceiveValue(null);
-                tell("Aucune app pour choisir un fichier");
+                tell("noPicker");
             }
             return true;
         }
@@ -235,9 +241,9 @@ public class MainActivity extends Activity {
                 public void run() {
                     try {
                         copy(src, uri);
-                        tell("Config enregistrée");
+                        tell("saved");
                     } catch (Exception e) {
-                        tell("Enregistrement impossible");
+                        tell("saveFail");
                     }
                 }
             }).start();
@@ -295,15 +301,34 @@ public class MainActivity extends Activity {
         i.setClipData(ClipData.newRawUri(exportFile.getName(), uri));
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         try {
-            startActivity(Intent.createChooser(i, "Envoyer la config Boucan"));
+            startActivity(Intent.createChooser(i, french ? "Envoyer la config Boucan" : "Send Boucan config"));
             tell("");
         } catch (ActivityNotFoundException e) {
-            tell("Aucune app pour envoyer le fichier");
+            tell("noShare");
         }
     }
 
     /** Appelé depuis la page : le fichier arrive par morceaux en base64. */
     private final class Bridge {
+        @JavascriptInterface
+        @SuppressWarnings("deprecation")
+        public void vibrate(int ms) {
+            try {
+                if (vibrator == null || ms <= 0 || ms > 200) return;
+                if (Build.VERSION.SDK_INT >= 26) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+                } else {
+                    vibrator.vibrate(ms);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
+        @JavascriptInterface
+        public void setLang(String lang) {
+            french = !"en".equals(lang);
+        }
+
         @JavascriptInterface
         public void exportBegin(String name) {
             closeExport();
@@ -341,7 +366,7 @@ public class MainActivity extends Activity {
             }
             exportOut = null;
             if (exportFailed || exportFile == null) {
-                tell("Export impossible (stockage plein ?)");
+                tell("exportFail");
                 return;
             }
             runOnUiThread(new Runnable() {

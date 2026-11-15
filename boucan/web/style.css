@@ -32,7 +32,7 @@ body.editing .playOnly { display: none !important; }
   content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: #fff;
   -webkit-transform: scaleX(0); transform: scaleX(0); -webkit-transform-origin: 0 0; transform-origin: 0 0;
 }
-#editBtn.holding:before { -webkit-transform: scaleX(1); transform: scaleX(1); -webkit-transition: -webkit-transform .55s linear; transition: transform .55s linear; }
+#editBtn.holding:before { -webkit-transform: scaleX(1); transform: scaleX(1); -webkit-transition: -webkit-transform .27s linear; transition: transform .27s linear; }
 #editBtn span { position: relative; }
 #editBtn.holding span { color: #000; }
 body.editing #editBtn { background: #fff; color: #000; }
@@ -69,13 +69,13 @@ body.editing .tag { bottom: 13px; }
 #tabs { position: absolute; left: 0; right: 0; bottom: 0; height: 66px; padding: 3px 1px 5px; display: flex; }
 .tab { flex: 1; min-width: 0; padding: 0 3px; }
 .tabIn {
-  position: relative; height: 58px; line-height: 50px; padding: 0 3px; border-radius: 8px; border-top: 7px solid #444;
+  position: relative; height: 58px; line-height: 50px; padding: 0 3px; border-radius: 8px; border-bottom: 7px solid #444;
   background: #1c1c1c; color: #bbb; font-size: 14px; text-align: center; text-transform: uppercase;
   overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
-.tab.cur .tabIn { line-height: 58px; border-top: 0; }
-.tab.add .tabIn { border-top-color: #1c1c1c; font-size: 26px; font-weight: 400; color: #fff; }
-.tab.live .tabIn:after { content: ''; position: absolute; right: 5px; bottom: 5px; width: 9px; height: 9px; border-radius: 5px; background: currentColor; }
+.tab.cur .tabIn { line-height: 58px; border-bottom: 0; }
+.tab.add .tabIn { border-bottom-color: #1c1c1c; font-size: 26px; font-weight: 400; color: #fff; }
+.tab.live .tabIn:after { content: ''; position: absolute; right: 5px; top: 5px; width: 9px; height: 9px; border-radius: 5px; background: currentColor; }
 
 /* ---------- Feuilles d'édition ---------- */
 .sheet { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 10; }
@@ -90,6 +90,12 @@ button { font: inherit; color: inherit; border: 0; margin: 0; padding: 0; outlin
 .btn { display: block; width: 100%; min-height: 54px; padding: 6px 10px; border-radius: 8px; background: #222; color: #fff; font-size: 15px; letter-spacing: .5px; }
 .btn.on { background: #fff; color: #000; }
 .btn.danger { background: #3a1212; color: #ff8a80; }
+.btn.accent { background: #FDD835; color: #000; min-height: 62px; font-size: 17px; }
+.playBtn { min-height: 62px; font-size: 17px; }
+.ico { display: inline-block; vertical-align: middle; margin-right: 12px; width: 16px; height: 20px; }
+.ico.play { width: 0; height: 0; border-top: 10px solid transparent; border-bottom: 10px solid transparent; border-left: 17px solid #fff; }
+.ico.pause { border-left: 6px solid #fff; border-right: 6px solid #fff; }
+.playBtn span { vertical-align: middle; }
 .btn.gap { margin-top: 10px; }
 .field {
   display: block; width: 100%; height: 54px; padding: 0 12px; border: 2px solid #444; border-radius: 8px; background: #111; color: #fff;
@@ -105,6 +111,9 @@ button { font: inherit; color: inherit; border: 0; margin: 0; padding: 0; outlin
 .slider { position: relative; height: 54px; border-radius: 8px; background: #222; overflow: hidden; touch-action: none; }
 .slider .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #6b6b6b; border-right: 5px solid #fff; }
 .slider .lbl { position: absolute; left: 12px; top: 0; line-height: 54px; font-size: 15px; }
+.slider.slim { height: 40px; }
+.slider.slim .lbl { line-height: 40px; font-size: 14px; }
+.sw.two > div { width: 50%; }
 canvas.wave { display: block; width: 100%; height: 120px; border-radius: 8px; touch-action: none; }
 .row > .time { flex: 2.2; text-align: center; line-height: 54px; font-size: 16px; white-space: nowrap; }
 .nudge { font-size: 26px; font-weight: 400; }
