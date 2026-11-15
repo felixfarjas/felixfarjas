@@ -37,11 +37,12 @@ body.editing .playOnly { display: none !important; }
 #editBtn.holding span { color: #000; }
 body.editing #editBtn { background: #fff; color: #000; }
 
-#hint { position: absolute; left: 0; right: 0; top: 62px; height: 26px; line-height: 26px; text-align: center; font-size: 12px; letter-spacing: 1px; background: #FDD835; color: #000; overflow: hidden; white-space: nowrap; }
+#hint { display: none; position: absolute; left: 0; right: 0; top: 62px; height: 26px; line-height: 26px; text-align: center; font-size: 12px; letter-spacing: 1px; background: #FDD835; color: #000; overflow: hidden; white-space: nowrap; }
 
 /* ---------- Grille 2 x 4 ---------- */
 #grid { position: absolute; left: 0; right: 0; top: 62px; bottom: 66px; padding: 0; }
-body.editing #grid { top: 88px; }
+body.moving #hint { display: block; }
+body.moving #grid { top: 88px; }
 .pad { position: absolute; width: 50%; height: 25%; }
 .padIn {
   position: absolute; left: 4px; top: 4px; right: 4px; bottom: 4px; border-radius: 10px; overflow: hidden;
@@ -68,6 +69,27 @@ body.editing .tag { bottom: 13px; }
 /* ---------- Cases micro et FX ---------- */
 .padIco { position: absolute; left: 0; right: 0; top: 9px; height: 30px; line-height: 30px; font-size: 13px; letter-spacing: 2px; text-align: center; opacity: .9; }
 .padIn.mic { border-radius: 26px; }
+.padIn.fx { border-radius: 46px; }
+/* hub : quatre petits boutons dans une case */
+.padIn.hubIn { background: transparent; overflow: visible; }
+body.editing .padIn.hubIn { outline: none; }
+.hub { position: absolute; left: -2px; top: -2px; right: -2px; bottom: -2px; }
+.mini { position: absolute; width: 50%; height: 50%; }
+.mini .padIn { left: 2px; top: 2px; right: 2px; bottom: 2px; border-radius: 8px; }
+.mini .padIn.fx { border-radius: 24px; }
+.mini .padIn.mic { border-radius: 14px; }
+.mini .name { font-size: 3.5vw; padding: 0 3px; }
+.mini .name.s2 { font-size: 3vw; }
+.mini .name.s3 { font-size: 2.6vw; }
+.mini .empty .name { font-size: 7vw; }
+.mini .tag, .mini .padIco { display: none; }
+body.editing .mini .padIn { outline-width: 2px; outline-offset: -4px; }
+/* réglage d'une case FX en glissant */
+#adj { display: none; position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, .82); z-index: 24; pointer-events: none; }
+#adjBox { position: absolute; width: 190px; height: 190px; border: 4px solid #fff; border-radius: 46px; background: #000; text-align: center; overflow: hidden; }
+#adjPie { display: block; width: 84px; height: 84px; margin: 12px auto 4px; }
+#adjTxt { font-size: 20px; }
+#adjName { font-size: 11px; letter-spacing: 1px; opacity: .7; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 8px; }
 .padIn.mic .name { color: #fff; }
 .padIn.fx { background-image: repeating-linear-gradient(135deg, rgba(0, 0, 0, .2), rgba(0, 0, 0, .2) 9px, rgba(0, 0, 0, 0) 9px, rgba(0, 0, 0, 0) 18px); }
 .padIn.fx.lit { background-image: none; }
@@ -104,6 +126,7 @@ body.editing .tag { bottom: 13px; }
 .dkVol .lbl { position: absolute; left: 10px; top: 0; line-height: 26px; font-size: 10px; letter-spacing: 1px; opacity: .8; }
 .btn.lst { text-align: left; padding-left: 14px; }
 .btn.tdeck { background: #37474F; }
+.btn.thub { background: #546E7A; }
 
 /* ---------- Enregistrement ---------- */
 #rec { display: none; position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, .9); z-index: 25; pointer-events: none; }
@@ -128,16 +151,16 @@ body.editing .tag { bottom: 13px; }
 }
 .tab.cur .tabIn { line-height: 58px; border-bottom: 0; }
 .tab.add .tabIn { border-bottom-color: #1c1c1c; font-size: 26px; font-weight: 400; color: #fff; }
-/* une page produit du son : trois barres qui dansent (animation gérée par la puce graphique) */
-.eq { display: none; position: absolute; right: 4px; top: 4px; height: 13px; line-height: 0; }
+/* une page produit du son : un trait lumineux va et vient sous le nom (animation gérée par la puce graphique) */
+.eq { display: none; position: absolute; left: 14%; right: 14%; bottom: 9px; height: 3px; border-radius: 2px; overflow: hidden; background: rgba(255, 255, 255, .18); }
+.tab.cur .eq { bottom: 12px; background: rgba(0, 0, 0, .22); }
 .tab.live .eq { display: block; }
-.eq i { display: inline-block; width: 3px; height: 13px; margin-left: 2px; border-radius: 1px; background: currentColor;
-  -webkit-transform-origin: 50% 100%; transform-origin: 50% 100%; -webkit-animation: eq .45s ease-in-out infinite alternate; animation: eq .45s ease-in-out infinite alternate; }
-.eq i:nth-child(2) { -webkit-animation-delay: -.2s; animation-delay: -.2s; }
-.eq i:nth-child(3) { -webkit-animation-delay: -.33s; animation-delay: -.33s; }
-@-webkit-keyframes eq { from { -webkit-transform: scaleY(.2); } to { -webkit-transform: scaleY(1); } }
-@keyframes eq { from { transform: scaleY(.2); } to { transform: scaleY(1); } }
+.eq i { display: block; width: 38%; height: 100%; border-radius: 2px; background: currentColor;
+  -webkit-animation: eq .8s ease-in-out infinite alternate; animation: eq .8s ease-in-out infinite alternate; }
+@-webkit-keyframes eq { from { -webkit-transform: translateX(-20%); } to { -webkit-transform: translateX(185%); } }
+@keyframes eq { from { transform: translateX(-20%); } to { transform: translateX(185%); } }
 .tab.live .tabIn { color: #fff; }
+.tab.cur.live .tabIn { line-height: 50px; }
 
 /* ---------- Feuilles d'édition ---------- */
 .sheet { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 10; }

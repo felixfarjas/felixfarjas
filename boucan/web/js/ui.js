@@ -76,13 +76,28 @@
   B.onError = function () { toast(t('saveFail'), 3500); };
 
   // ====================== Rendu ======================
+  // Une « vue » : les éléments d'un bouton (grande case ou petit bouton de hub).
+  function viewDom() {
+    var v = { inn: h('div', 'padIn'), prog: h('div', 'prog'), name: h('div', 'name'), tag: h('div', 'tag'), ico: h('div', 'padIco') };
+    add(v.inn, v.prog, v.ico, v.name, v.tag);
+    return v;
+  }
   function buildGrid() {
     for (var i = 0; i < B.SLOTS; i++) {
-      var p = { el: h('div', 'pad'), inn: h('div', 'padIn'), prog: h('div', 'prog'), name: h('div', 'name'), tag: h('div', 'tag'), ico: h('div', 'padIco'), pl: playerDom(), dk: deckDom() };
+      var p = viewDom(), k;
+      p.el = h('div', 'pad'); p.pl = playerDom(); p.dk = deckDom(); p.hub = { el: h('div', 'hub'), v: [] };
+      for (k = 0; k < 4; k++) {
+        var m = viewDom(), box = h('div', 'mini');
+        box.style.left = (k % 2 * 50) + '%';
+        box.style.top = (Math.floor(k / 2) * 50) + '%';
+        box.setAttribute('data-s', k);
+        add(p.hub.el, add(box, m.inn));
+        p.hub.v.push(m);
+      }
       p.el.style.left = (i % 2 * 50) + '%';
       p.el.style.top = (Math.floor(i / 2) * 25) + '%';
       p.el.setAttribute('data-i', i);
-      add(el.grid, add(p.el, add(p.inn, p.prog, p.ico, p.name, p.tag, p.pl.el, p.dk.el)));
+      add(el.grid, add(p.el, add(p.inn, p.pl.el, p.dk.el, p.hub.el)));
       pads.push(p);
     }
   }
@@ -98,36 +113,26 @@
     st.webkitAnimation = s; st.animation = s;
   }
 
-  function isHeld(i) {
-    for (var k in held) if (held[k].i === i && held[k].pg === B.cfg.cur) return true;
+  // s : numéro du petit bouton dans un hub, -1 pour une case entière.
+  function isHeld(i, s) {
+    for (var k in held) if (held[k].i === i && held[k].s === s && held[k].pg === B.cfg.cur) return true;
     return false;
   }
+  // Vrai si la case, ou l'un des boutons de son hub, satisfait le test.
+  function inCell(c, test) {
+    return !!c && (test(c) || (c.type === 'hub' && c.subs.some(function (q) { return !!q && test(q); })));
+  }
 
-  function renderPad(i) {
-    var p = pads[i], pad = page().pads[i], cls = 'padIn';
-    var wide = pad ? B.ROWS[pad.type] || 0 : 0, covered = B.cover(page(), i) >= 0;
-    p.el.style.display = covered ? 'none' : '';
-    p.el.style.width = wide ? '100%' : '50%';
-    p.el.style.height = ((wide || 1) * 25) + '%';
-    p.pl.el.style.display = wide && pad.type === 'player' ? '' : 'none';
-    p.dk.el.style.display = wide && pad.type === 'deck' ? '' : 'none';
-    if (covered) return;
-    if (wide) {
-      p.inn.className = cls + ' pl';
-      p.inn.style.background = ''; p.inn.style.border = ''; p.inn.style.boxShadow = '';
-      p.inn.style.backgroundColor = pad.color; p.inn.style.color = ink(pad.color);
-      p.name.textContent = ''; p.tag.textContent = ''; p.ico.innerHTML = '';
-      setProg(p, null);
-      if (pad.type === 'player') playerPaint(p.pl); else { p.dk.fg = ink(pad.color); deckPaint(p.dk); }
-      return;
-    }
+  // Dessine un bouton (sample, micro ou FX) dans une vue.
+  function paint(p, pad, down) {
+    var cls = 'padIn', st = p.inn.style;
+    st.background = ''; st.boxShadow = ''; st.border = '';
     if (!pad) {
       p.inn.className = cls + ' empty';
-      p.inn.style.background = ''; p.inn.style.color = ''; p.inn.style.boxShadow = '';
+      st.color = ''; st.backgroundColor = '';
       p.name.className = 'name';
       p.name.textContent = S.edit ? '+' : '';
       p.tag.textContent = ''; p.ico.innerHTML = '';
-      p.inn.style.border = ''; p.inn.style.backgroundColor = '';
       setProg(p, null);
       return;
     }
@@ -138,21 +143,44 @@
     if (type === 'sample' && !A.buffers[pad.sample]) cls += ' loading';
     if (mic) cls += ' mic';
     if (fx) cls += ' fx' + (lit ? ' lit' : '');
-    if (isHeld(i)) cls += ' down';
+    if (down) cls += ' down';
     if (S.moving && S.moving.pad === pad) cls += ' src';
     p.inn.className = cls;
-    // micro : case noire cerclée de couleur ; FX : case hachurée
-    p.inn.style.background = '';
-    p.inn.style.backgroundColor = mic ? '#000' : pad.color;
-    p.inn.style.border = mic ? '5px solid ' + pad.color : '';
-    p.inn.style.color = fg;
-    p.inn.style.boxShadow = lit ? 'inset 0 0 0 6px ' + fg : '';
+    // micro : case noire cerclée de couleur ; FX : case hachurée très arrondie
+    st.backgroundColor = mic ? '#000' : pad.color;
+    st.border = mic ? '5px solid ' + pad.color : '';
+    st.color = fg;
+    st.boxShadow = lit ? 'inset 0 0 0 6px ' + fg : '';
     p.ico.innerHTML = mic ? MIC_SVG : '';
     if (fx) p.ico.textContent = 'FX';
     p.name.className = 'name' + (longest > 11 || nm.length > 22 ? ' s3' : longest > 8 || nm.length > 14 ? ' s2' : '');
     p.name.textContent = nm;
     p.tag.textContent = mic ? t(pad.micMode === 'live' ? 'micLive' : 'micAfter') : t('mode.' + pad.mode) + (pad.loop ? ' · ' + t('loop') : '');
     setProg(p, v);
+  }
+
+  function renderPad(i) {
+    var p = pads[i], pad = page().pads[i], st = p.inn.style, k;
+    var wide = pad ? B.ROWS[pad.type] || 0 : 0, covered = B.cover(page(), i) >= 0, hub = !!pad && pad.type === 'hub';
+    p.el.style.display = covered ? 'none' : '';
+    p.el.style.width = wide ? '100%' : '50%';
+    p.el.style.height = ((wide || 1) * 25) + '%';
+    p.pl.el.style.display = wide && pad.type === 'player' ? '' : 'none';
+    p.dk.el.style.display = wide && pad.type === 'deck' ? '' : 'none';
+    p.hub.el.style.display = hub ? '' : 'none';
+    if (covered) return;
+    if (wide || hub) {
+      p.inn.className = wide ? 'padIn pl' : 'padIn hubIn';
+      st.background = ''; st.border = ''; st.boxShadow = '';
+      st.backgroundColor = wide ? pad.color : 'transparent'; st.color = wide ? ink(pad.color) : '';
+      p.name.textContent = ''; p.tag.textContent = ''; p.ico.innerHTML = '';
+      setProg(p, null);
+      if (hub) for (k = 0; k < 4; k++) paint(p.hub.v[k], pad.subs[k], isHeld(i, k));
+      else if (pad.type === 'player') playerPaint(p.pl);
+      else { p.dk.fg = ink(pad.color); deckPaint(p.dk); }
+      return;
+    }
+    paint(p, pad, isHeld(i, -1));
   }
 
   function renderGrid() {
@@ -170,7 +198,7 @@
       el.tabs.innerHTML = ''; tabEls = [];
       for (k = 0; k < want; k++) {
         var e = { t: h('div', 'tab'), inn: h('div', 'tabIn'), lbl: h('span'), eq: h('span', 'eq') };
-        e.eq.innerHTML = '<i></i><i></i><i></i>';
+        e.eq.innerHTML = '<i></i>';
         add(el.tabs, add(e.t, add(e.inn, e.lbl, e.eq)));
         tabEls.push(e);
       }
@@ -196,7 +224,7 @@
     el.hint.textContent = t(S.moving ? 'bar.move' : 'bar.edit');
   }
   function renderAll() {
-    document.body.className = S.edit ? 'editing' : '';
+    document.body.className = (S.edit ? 'editing' : '') + (S.moving ? ' moving' : '');
     el.editLbl.textContent = S.edit ? 'OK' : t('edit');
     el.menuBtn.textContent = t('menu');
     renderHint(); renderFx(); renderGrid(); renderTabs();
@@ -204,7 +232,8 @@
 
   A.onChange = function (id) {
     var pg = page().pads, i;
-    for (i = 0; i < B.SLOTS; i++) if (pg[i] && pg[i].id === id) renderPad(i);
+    function is(q) { return q.id === id; }
+    for (i = 0; i < B.SLOTS; i++) if (inCell(pg[i], is)) renderPad(i);
     renderTabs();
     if (S.onVoice) S.onVoice(id);
   };
@@ -363,7 +392,7 @@
       d.cur = cur;
     }
     d.now.textContent = D.track ? D.track.t + (D.track.a ? ' — ' + D.track.a : '') : '';
-    d.play.innerHTML = D.playing() ? SVG_PAUSE : SVG_PLAY;
+    d.play.innerHTML = D.wanted() ? SVG_PAUSE : SVG_PLAY;
     d.fill.style.width = (B.cfg.deck.vol * 100) + '%';
     waveDraw(d);
   }
@@ -384,11 +413,12 @@
     var D = B.deck;
     D.load();
     sheet(t('dkLists'), function (body, sh) {
-      var s = sec(body, '');
+      var s = sec(body, ''), rb = h('button', 'btn accent', t('dkRootBtn', rootLabel(B.cfg.deck.root)));
+      on(rb, 'click', function () { sh.close(); openRoots(openLists); });
+      add(s, rb);
       function item(key, label, n) { add(s, lstBtn(label, n, B.cfg.deck.sub === key, function () { D.setSub(key); sh.close(); })); }
       item('', t('dkAll'), D.count());
       D.subs().forEach(function (x) { item(x.key, x.key === '.' ? t('dkHere') : D.leaf(x.key), x.n); });
-      add(s, h('div', 'note', t('dkRootNote', rootLabel(B.cfg.deck.root))));
     }, deckPaintAll);
   }
   function rootLabel(path) {
@@ -526,17 +556,82 @@
   }
 
   // ====================== Jeu ======================
-  function padDown(i, key, target) {
-    var pad = page().pads[i];
-    if (!pad) return;
-    if (B.ROWS[pad.type]) { widgetTap(target); return; }
+  function subIndex(target) {
+    while (target && target !== el.grid) {
+      if (target.getAttribute && target.getAttribute('data-s') !== null) return parseInt(target.getAttribute('data-s'), 10);
+      target = target.parentNode;
+    }
+    return -1;
+  }
+  // Valeur affichée d'un réglage de case FX.
+  function parLabel(pad, key) {
+    var v = B.padFxVal(pad);
+    if (key === 'brakeTime') return v.time.toFixed(1) + ' s';
+    if (key === 'echoTime') return Math.round(v.time * 1000) + ' ms';
+    if (key === 'repeats') return Math.round((v.fb - 0.2) / 0.7 * 100) + ' %';
+    if (key === 'sweep') return v.sweep.toFixed(2) + ' s';
+    if (key === 'rate') return v.hz.toFixed(1) + ' Hz';
+    if (key === 'loopLen') return Math.round(v.len * 1000) + ' ms';
+    if (key === 'fade') return Math.round(v.sweep * 1000) + ' ms';
+    return Math.round(v.amt * 100) + ' %';
+  }
+  function padP1(pad) { return typeof pad.p1 === 'number' ? pad.p1 : B.PAD_FX_DEF[pad.fx][0]; }
+
+  // Case FX « réglable en glissant » : doigt tenu, monter ou descendre change
+  // la valeur. L'écran s'assombrit, un camembert et le contour montrent le dosage.
+  function adjShow(hd) {
+    var pad = hd.pad, v = padP1(pad), r = hd.view.inn.getBoundingClientRect(), size = 190, st = el.adjBox.style;
+    st.left = Math.max(8, Math.min(window.innerWidth - size - 8, r.left + r.width / 2 - size / 2)) + 'px';
+    st.top = Math.max(8, Math.min(window.innerHeight - size - 8, r.top + r.height / 2 - size / 2)) + 'px';
+    st.borderColor = pad.color;
+    st.borderWidth = Math.round(4 + 14 * v) + 'px';
+    var c = el.adjPie, dpr = window.devicePixelRatio || 1, n = Math.round(84 * dpr), g = c.getContext('2d'), a0 = -Math.PI / 2;
+    if (c.width !== n) { c.width = n; c.height = n; }
+    g.clearRect(0, 0, n, n);
+    g.fillStyle = pad.color;
+    g.beginPath(); g.moveTo(n / 2, n / 2); g.arc(n / 2, n / 2, n / 2 - 3 * dpr, a0, a0 + Math.PI * 2 * Math.max(0.001, v)); g.closePath(); g.fill();
+    g.strokeStyle = '#fff'; g.lineWidth = 2 * dpr;
+    g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 3 * dpr, 0, Math.PI * 2); g.stroke();
+    el.adjTxt.textContent = parLabel(pad, B.PAD_FX_PAR[pad.fx][0]);
+    el.adjName.textContent = pad.name || t('pfx.' + pad.fx);
+    el.adj.style.display = 'block';
+  }
+  function adjHide() { el.adj.style.display = 'none'; }
+  function adjMove(hd, y) {
+    var a = hd.adj, pad = hd.pad;
+    if (!a.on) {
+      if (Math.abs(y - a.y) < 14) return false;
+      a.on = true; a.y = y;
+      buzz();
+      if (!A.fxPads[pad.id]) A.padFx(pad, true);
+    }
+    pad.p1 = Math.round(Math.max(0, Math.min(1, a.p0 - (y - a.y) / 170)) * 100) / 100;
+    A.padFxUpdate(pad);
+    adjShow(hd);
+    return true;
+  }
+  function adjEnd(hd) {
+    if (!hd.adj || !hd.adj.on) return;
+    adjHide();
+    B.save();
+  }
+
+  function padDown(i, key, target, y) {
+    var cell = page().pads[i], s = -1, pad = cell;
+    if (!cell) return;
+    if (B.ROWS[cell.type]) { widgetTap(target); return; }
+    if (cell.type === 'hub') { s = subIndex(target); pad = s >= 0 ? cell.subs[s] : null; if (!pad) return; }
     var type = pad.type || 'sample';
     if (type === 'sample' && !A.buffers[pad.sample]) return;
     if (type === 'mic' && rec) return;
     buzz();
-    var hd = held[key] = { pad: pad, i: i, pg: B.cfg.cur };
+    var hd = held[key] = { pad: pad, i: i, s: s, pg: B.cfg.cur, view: s >= 0 ? pads[i].hub.v[s] : pads[i] };
     // "was" : l'état d'avant, pour pouvoir annuler l'appui si c'était un swipe
-    if (type === 'fx') { hd.was = !!A.fxPads[pad.id]; A.padFx(pad, pad.mode === 'toggle' ? !hd.was : true); }
+    if (type === 'fx') {
+      hd.was = !!A.fxPads[pad.id];
+      A.padFx(pad, pad.mode === 'toggle' ? !hd.was : true);
+      if (pad.live && typeof y === 'number') hd.adj = { y: y, p0: padP1(pad), on: false };
+    }
     else if (type === 'mic') recHold(pad, i, key);
     else if (pad.mode === 'toggle' && A.voices[pad.id]) { hd.was = A.pos(A.voices[pad.id]); A.stop(pad.id); }
     else A.play(pad);
@@ -546,6 +641,7 @@
     var hd = held[key];
     if (!hd) return;
     delete held[key];
+    adjEnd(hd);
     var type = hd.pad.type || 'sample';
     if (type === 'fx') { if (hd.pad.mode !== 'toggle') A.padFx(hd.pad, false); }
     else if (type === 'mic') { if (rec && rec.key === key) recEnd(false); }
@@ -557,6 +653,7 @@
     var hd = held[key];
     if (!hd) return;
     delete held[key];
+    adjEnd(hd);
     var pad = hd.pad, type = pad.type || 'sample';
     if (type === 'fx') A.padFx(pad, !!hd.was && pad.mode === 'toggle');
     else if (type === 'mic') { if (rec && rec.key === key) recEnd(true); }
@@ -650,6 +747,10 @@
     S.edit = v;
     S.moving = null;
     if (v) Object.keys(held).forEach(padUp);
+    // en quittant l'édition, un hub resté vide disparaît
+    else B.cfg.pages.forEach(function (pg) {
+      pg.pads.forEach(function (p, i) { if (p && p.type === 'hub' && !p.subs.some(function (q) { return !!q; })) pg.pads[i] = null; });
+    });
     renderAll();
   }
 
@@ -675,7 +776,7 @@
       if (S.edit || list) return;
       for (var k = 0; k < ev.changedTouches.length; k++) {
         var t = ev.changedTouches[k], i = padIndex(t.target);
-        if (i >= 0) padDown(i, 't' + t.identifier, t.target);
+        if (i >= 0) padDown(i, 't' + t.identifier, t.target, t.clientY);
       }
     });
     function end(ev) {
@@ -692,7 +793,16 @@
     on(el.grid, 'touchend', end);
     on(el.grid, 'touchcancel', end);
     on(el.grid, 'touchmove', function (ev) {
-      var tc = sw && touchOf(ev.touches, sw.id), k;
+      var k, tc;
+      // case FX réglable : le doigt qui monte ou descend dose l'effet
+      for (k = 0; k < ev.changedTouches.length; k++) {
+        var ct = ev.changedTouches[k], hd = held['t' + ct.identifier];
+        if (hd && hd.adj && adjMove(hd, ct.clientY)) {
+          ev.preventDefault();
+          if (sw && sw.id === ct.identifier && !sw.on) sw = null;
+        }
+      }
+      tc = sw && touchOf(ev.touches, sw.id);
       if (sw && tc) {
         var dx = tc.clientX - sw.x, dy = tc.clientY - sw.y;
         if (!sw.on) {
@@ -716,19 +826,22 @@
         if (rec && rec.key === 't' + rt.identifier) recMove(rt.clientX, rt.clientY);
       }
     });
-    on(window, 'mousemove', function (ev) { if (rec && rec.key === 'm') recMove(ev.clientX, ev.clientY); });
+    on(window, 'mousemove', function (ev) {
+      if (rec && rec.key === 'm') recMove(ev.clientX, ev.clientY);
+      if (held.m && held.m.adj) adjMove(held.m, ev.clientY);
+    });
     on(el.rec, 'click', function () { if (rec && rec.tap && rec.ready) recEnd(false); });
     on(el.grid, 'mousedown', function (ev) {
       A.resume();
       if (S.edit) return;
       var i = padIndex(ev.target);
-      if (i >= 0) padDown(i, 'm', ev.target);
+      if (i >= 0) padDown(i, 'm', ev.target, ev.clientY);
     });
     on(window, 'mouseup', function () { padUp('m'); });
     on(el.grid, 'click', function (ev) {
       if (!S.edit) return;
       var i = padIndex(ev.target);
-      if (i >= 0) editTap(i);
+      if (i >= 0) editTap(i, subIndex(ev.target));
     });
 
     on(el.tabs, 'touchstart', function (ev) {
@@ -777,6 +890,7 @@
     var holdT = null;
     function holdStart() {
       if (S.edit) { setEdit(false); return; }
+      if (!B.cfg.editHold) { buzz(); setEdit(true); return; } // sécurité désactivée (réglage du menu)
       el.editBtn.className = 'tbtn holding';
       holdT = setTimeout(function () { holdT = null; el.editBtn.className = 'tbtn'; buzz(); setEdit(true); }, 275);
     }
@@ -797,22 +911,36 @@
     on(document, 'contextmenu', function (ev) { ev.preventDefault(); });
   }
 
-  function editTap(i) {
-    var pg = page();
+  // Une « ref » désigne un emplacement : page, case, et bouton de hub (s, ou -1).
+  function refGet(r) {
+    var c = B.cfg.pages[r.pi].pads[r.i];
+    return r.s >= 0 ? (c && c.type === 'hub' ? c.subs[r.s] : null) : c;
+  }
+  function refSet(r, v) {
+    var pg = B.cfg.pages[r.pi];
+    if (r.s < 0) pg.pads[r.i] = v;
+    else if (pg.pads[r.i] && pg.pads[r.i].type === 'hub') pg.pads[r.i].subs[r.s] = v;
+  }
+  function small(p) { return !p || (p.type || 'sample') === 'sample' || p.type === 'fx'; }
+
+  function editTap(i, s) {
+    var cell = page().pads[i], hub = !!cell && cell.type === 'hub';
+    if (hub && s < 0) return;
+    var ref = { pi: B.cfg.cur, i: i, s: hub ? s : -1 }, dst = refGet(ref);
     if (S.moving) {
-      var m = S.moving, src = B.cfg.pages[m.pg];
+      var m = S.moving;
       S.moving = null;
-      if (pg.pads[i] && B.ROWS[pg.pads[i].type]) { toast(t('plNoSwap')); }
-      else if (src && src.pads[m.i] === m.pad && !(m.pg === B.cfg.cur && m.i === i)) {
-        src.pads[m.i] = pg.pads[i];
-        pg.pads[i] = m.pad;
+      if (dst && (B.ROWS[dst.type] || dst.type === 'hub')) toast(t('plNoSwap'));
+      else if ((ref.s >= 0 && !small(m.pad)) || (m.ref.s >= 0 && !small(dst))) toast(t('hubOnly'), 3000);
+      else if (refGet(m.ref) === m.pad && dst !== m.pad) {
+        refSet(m.ref, dst);
+        refSet(ref, m.pad);
         B.save();
       }
       renderAll();
       return;
     }
-    if (pg.pads[i]) { editPad(B.cfg.cur, i); return; }
-    newPad(i);
+    if (dst) editPad(ref); else newPad(ref);
   }
 
   // ====================== Fichiers ======================
@@ -916,9 +1044,10 @@
     return row;
   }
   // Type de case : chaque type a sa couleur, la même partout.
-  function typeChoice(cur, cb) {
+  function typeChoice(cur, sub, cb) {
     var row = h('div', 'row');
     [['sample', t('typeSample')], ['mic', t('typeMic')], ['fx', t('typeFx')]].forEach(function (o) {
+      if (sub && o[0] === 'mic') return; // pas de micro dans un hub
       var b = h('button', 'btn type t' + o[0] + (o[0] === cur ? ' sel' : ''), o[1]);
       on(b, 'click', function () { cb(o[0]); });
       add(row, b);
@@ -1098,25 +1227,43 @@
   }
 
   // Case vide : on choisit d'abord ce qu'on y met.
-  function newPad(i) {
-    var pg = page(), pi = B.cfg.cur;
+  function newPad(ref) {
+    var pi = ref.pi, i = ref.i, pg = B.cfg.pages[pi], sub = ref.s >= 0;
     function make(type, extra, name) {
-      pg.pads[i] = setType({ id: B.uid('p'), name: name || '', color: B.COLORS[i % B.COLORS.length] }, type, extra);
+      refSet(ref, setType({ id: B.uid('p'), name: name || '', color: B.COLORS[(i + (sub ? ref.s + 3 : 0)) % B.COLORS.length] }, type, extra));
       B.saveNow();
     }
-    sheet(t('newPad'), function (body, sh) {
+    sheet(t(sub ? 'newSub' : 'newPad'), function (body, sh) {
       function big(type, label, note, fn) {
         var b = h('button', 'btn big type sel t' + type);
         add(b, h('div', '', label), h('div', 'note', note));
         on(b, 'click', fn);
         sec(body, '', b);
       }
-      function open() { sh.close(); renderAll(); editPad(pi, i); }
-      big('sample', t('typeSample'), t('noteSample'), function () {
+      function open(opt) { sh.close(); renderAll(); editPad(ref, opt); }
+      big('sample', t('newFile'), t('noteSample'), function () {
         pickAudio(function (res, name) { make('sample', sampleFields(res), name); open(); });
       });
-      big('mic', t('typeMic'), t('noteMic'), function () { make('mic'); open(); });
-      big('fx', t('typeFx'), t('noteFx'), function () { make('fx'); open(); });
+      big('sample', t('newRec'), t('noteRec'), function () { make('sample', null, 'REC'); open({ rec: true }); });
+      if (!sub) big('mic', t('newMic'), t('noteMic'), function () { make('mic'); open(); });
+      big('fx', t('newFx'), t('noteFx'), function () { make('fx'); open(); });
+      if (sub) {
+        var del = h('button', 'btn danger', t('hubDel'));
+        on(del, 'click', function () {
+          ask(t('askHubDel'), t('doDel'), function () {
+            pg.pads[i].subs.forEach(function (q) { if (q) { A.stop(q.id, false, true); A.padFx(q, false); } });
+            pg.pads[i] = null;
+            sh.close(); renderAll();
+            B.saveNow().then(B.gc);
+          });
+        });
+        sec(body, 'HUB', del);
+        return;
+      }
+      big('hub', t('newHub'), t('noteHub'), function () {
+        pg.pads[i] = { id: B.uid('p'), type: 'hub', name: '', color: '#000000', subs: [null, null, null, null] };
+        B.saveNow(); sh.close(); renderAll();
+      });
       // un widget prend toute la largeur : on cherche des rangées libres à partir de la case touchée
       function widget(type, name, color) {
         var rows = B.ROWS[type], a, at = -1;
@@ -1126,9 +1273,18 @@
         pg.pads[at] = { id: B.uid('p'), type: type, name: name, color: color };
         B.saveNow(); sh.close(); renderAll(); playerPoll();
       }
-      big('deck', t('typeDeck'), t('noteDeck'), function () { widget('deck', t('typeDeck'), '#37474F'); });
+      big('deck', t('newDeck'), t('noteDeck'), function () { widget('deck', t('typeDeck'), '#37474F'); });
       big('player', 'PHONE CONTROL', t('notePlayer'), function () { widget('player', 'PHONE CONTROL', '#2E7D32'); });
     });
+  }
+
+  // Curseur fin d'une feuille de réglages.
+  function rangeS(get, set, label) {
+    var s = h('div', 'slider slim'), f = h('div', 'fill'), l = h('div', 'lbl');
+    function paint() { f.style.width = (get() * 100) + '%'; l.textContent = label(); }
+    paint();
+    slider(s, function (v) { set(v); paint(); }, true);
+    return add(s, f, l);
   }
 
   // Éditeur des widgets de musique.
@@ -1146,10 +1302,21 @@
         sec(body, t('dkFx'), choice([['on', t('dkFxOn')], ['off', t('dkFxOff')]], B.cfg.deck.fx ? 'on' : 'off', function (m) {
           B.cfg.deck.fx = m === 'on'; B.deck.route(); B.save();
         }), h('div', 'note', t('dkFxNote')));
+        var rootB = h('button', 'btn', '');
+        var rootLbl = function () { rootB.textContent = rootLabel(B.cfg.deck.root); };
+        on(rootB, 'click', function () { openRoots(rootLbl); });
+        rootLbl();
+        sec(body, t('dkRoot'), rootB, h('div', 'note', t('dkRootHelp')));
+        sec(body, t('dkBrake'), rangeS(function () { return B.cfg.deck.brake / 2; }, function (v) {
+          B.cfg.deck.brake = Math.round(v * 20) / 10; B.save();
+        }, function () { return B.cfg.deck.brake ? B.cfg.deck.brake.toFixed(1) + ' s' : t('none'); }), h('div', 'note', t('dkBrakeNote')));
       }
       sec(body, t('duckSec'), choice([['none', t('duckNone')], ['duck', t('duckDuck')], ['pause', t('duckPause')]], B.cfg.duck, function (m) {
         B.cfg.duck = m; B.save();
       }), h('div', 'note', t('duckNote')));
+      sec(body, t('duckFade'), rangeS(function () { return B.cfg.duckFade / 2; }, function (v) {
+        B.cfg.duckFade = Math.round(v * 40) / 20; B.save();
+      }, function () { return B.cfg.duckFade.toFixed(2) + ' s'; }), h('div', 'note', t('duckFadeNote')));
       var clear = h('button', 'btn danger', t('clear'));
       on(clear, 'click', function () {
         ask(t('askClear', deck ? t('typeDeck') : 'PHONE CONTROL'), t('doClear'), function () { pg.pads[i] = null; sh.close(); });
@@ -1158,8 +1325,8 @@
     }, function () { B.saveNow(); renderAll(); });
   }
 
-  function editPad(pi, i) {
-    var pg = B.cfg.pages[pi], pad = pg.pads[i];
+  function editPad(ref, opt) {
+    var pi = ref.pi, i = ref.i, pad = refGet(ref);
     if (!pad) return;
     if (B.ROWS[pad.type]) { editWidget(pi, i); return; }
     var type = pad.type || 'sample';
@@ -1191,7 +1358,7 @@
       function setVol(v) {
         pad.vol = v;
         var cur = A.voices[pad.id];
-        if (cur) cur.g.gain.setTargetAtTime(v, A.ctx.currentTime, 0.02);
+        if (cur) { try { A.freeze(cur.g.gain, A.ctx.currentTime); cur.g.gain.setTargetAtTime(v, A.ctx.currentTime, 0.02); } catch (e) {} }
         B.save();
       }
       var sl = range01('slim', function () { return pad.vol / 1.5; }, function (v) {
@@ -1223,8 +1390,8 @@
       });
     }
 
-    sheet(t('pad') + ' ' + (i + 1), function (body, sh) {
-      function reopen() { sh.close(); editPad(pi, i); }
+    sheet(t('pad') + ' ' + (i + 1) + (ref.s >= 0 ? '.' + (ref.s + 1) : ''), function (body, sh) {
+      function reopen() { sh.close(); editPad(ref); }
 
       if (type === 'sample') {
         var change = h('button', 'btn accent', t('change')), micB = h('button', 'btn accent micBtn');
@@ -1296,16 +1463,7 @@
               A.padFx(pad, false);
               pad[pk] = Math.round(v * 50) / 50;
               B.save();
-            }, function () {
-              var v = B.padFxVal(pad);
-              if (key === 'brakeTime') return v.time.toFixed(1) + ' s';
-              if (key === 'echoTime') return Math.round(v.time * 1000) + ' ms';
-              if (key === 'repeats') return Math.round((v.fb - 0.2) / 0.7 * 100) + ' %';
-              if (key === 'sweep') return v.sweep.toFixed(2) + ' s';
-              if (key === 'rate') return v.hz.toFixed(1) + ' Hz';
-              if (key === 'fade') return Math.round(v.sweep * 1000) + ' ms';
-              return Math.round(v.amt * 100) + ' %';
-            }));
+            }, function () { return parLabel(pad, key);             }));
           });
         };
         fxParams();
@@ -1314,6 +1472,7 @@
         sec(body, t('trigger'), choice([['gate', t('mode.gate')], ['toggle', t('mode.toggle')]], pad.mode, function (m) {
           A.padFx(pad, false); pad.mode = m; fh.textContent = t('hint.fx' + m); show();
         }), fh);
+        sec(body, '', check(t('fxLive'), !!pad.live, function (v) { pad.live = v; B.save(); }), h('div', 'note', t('fxLiveNote')));
       } else {
         var hint = h('div', 'note', t('hint.' + pad.mode));
         var loop = h('button', 'btn gap');
@@ -1372,7 +1531,7 @@
       }
 
       // Type de case : on peut en changer à tout moment.
-      sec(body, t('padType'), typeChoice(type, function (ty) {
+      sec(body, t('padType'), typeChoice(type, ref.s >= 0, function (ty) {
         if (ty === type) return;
         halt(); A.padFx(pad, false);
         if (ty === 'sample') {
@@ -1389,17 +1548,19 @@
       var move = h('button', 'btn', t('move')), clear = h('button', 'btn gap danger', t('clear'));
       on(move, 'click', function () {
         sh.close();
-        S.moving = { pg: pi, i: i, pad: pad };
+        S.moving = { ref: ref, pad: pad };
         renderAll();
       });
       on(clear, 'click', function () {
         ask(t('askClear', pad.name || i + 1), t('doClear'), function () {
+          refSet(ref, null);
           halt(); A.padFx(pad, false);
-          pg.pads[i] = null;
           sh.close();
         });
       });
       sec(body, t('padSec'), move, clear);
+      // « sample depuis le micro » : la prise démarre tout de suite
+      if (opt && opt.rec && type === 'sample') micB.click();
 
       if (wave) {
         S.onVoice = function (id) { if (id === pad.id) { if (!A.voices[id] && pausedAt === null) wave.head(null); playShow(); } };
@@ -1411,7 +1572,9 @@
       if (raf) window.cancelAnimationFrame(raf);
       if (denT) { clearTimeout(denT); reprocess()['catch'](function () {}); }
       A.stop(pad.id, false, true);
-      var still = pg.pads[i] === pad && (pad.type || 'sample') === 'sample';
+      var still = refGet(ref) === pad && (pad.type || 'sample') === 'sample';
+      // sample créé pour une prise micro qui n'a pas eu lieu : la case redevient vide
+      if (still && !pad.sample) { refSet(ref, null); still = false; }
       (still ? finalizePad(pad) : Promise.resolve()).then(function () { return B.saveNow(); }).then(B.gc)['catch'](function () {});
       renderAll();
     });
@@ -1471,7 +1634,7 @@
         if (k >= ids.length) { res(); return; }
         var id = ids[k++];
         A.load(id).then(function () {
-          page().pads.forEach(function (p, i) { if (p && p.sample === id) renderPad(i); });
+          page().pads.forEach(function (p, i) { if (inCell(p, function (q) { return q.sample === id; })) renderPad(i); });
         })['catch'](function () {}).then(function () { setTimeout(next, 0); });
       })();
     });
@@ -1578,7 +1741,10 @@
       var swp = btn('', '', function () { B.cfg.swipe = !B.cfg.swipe; swpLbl(); B.save(); });
       function swpLbl() { swp.textContent = t(B.cfg.swipe ? 'swipeOn' : 'swipeOff'); swp.className = 'btn gap' + (B.cfg.swipe ? ' on' : ''); }
       swpLbl();
-      sec(body, t('settings'), vib, swp);
+      var eh = btn('', '', function () { B.cfg.editHold = !B.cfg.editHold; ehLbl(); B.save(); });
+      function ehLbl() { eh.textContent = t(B.cfg.editHold ? 'editHoldOn' : 'editHoldOff'); eh.className = 'btn gap' + (B.cfg.editHold ? ' on' : ''); }
+      ehLbl();
+      sec(body, t('settings'), vib, swp, eh);
 
       sec(body, t('reset'), btn(t('resetBtn'), 'danger', function () {
         ask(t('askReset'), t('doReset'), function () {
@@ -1611,7 +1777,7 @@
   function fatal(msg) { el.busyTxt.textContent = msg; el.busy.style.display = 'flex'; }
 
   function boot() {
-    ['grid', 'tabs', 'toast', 'busy', 'busyTxt', 'fx', 'rec', 'recBox', 'recWave', 'recTxt', 'recHint', 'recBin', 'fxLbl', 'fxBtn', 'menuBtn', 'stopBtn', 'editBtn', 'editLbl', 'hint', 'fileAudio', 'fileConfig']
+    ['grid', 'tabs', 'toast', 'busy', 'busyTxt', 'fx', 'rec', 'recBox', 'recWave', 'recTxt', 'recHint', 'recBin', 'adj', 'adjBox', 'adjPie', 'adjTxt', 'adjName', 'fxLbl', 'fxBtn', 'menuBtn', 'stopBtn', 'editBtn', 'editLbl', 'hint', 'fileAudio', 'fileConfig']
       .forEach(function (id) { el[id] = $(id); });
     el.fxFill = el.fx.querySelector('.fill');
     el.recBin.innerHTML = BIN_SVG;
@@ -1635,7 +1801,7 @@
       B.deck.onChange = deckPaintAll;
       B.deck.load();
       setInterval(playerPoll, 1000);
-      on(document, 'visibilitychange', playerPoll);
+      on(document, 'visibilitychange', function () { playerPoll(); if (!document.hidden) B.deck.pump(); });
       return loadBuffers();
     })['catch'](function (e) {
       fatal(t('bootFail') + (e && e.message || e));
