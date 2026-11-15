@@ -3,18 +3,20 @@
 Soundboard Android ultra simple, pensé pour être joué d'une main, à vélo, en manif.
 
 - **8 énormes cases par page** (2 colonnes × 4), jusqu'à **8 pages**, sélection des pages en bas.
-- **3 déclenchements** par case : *one shot*, *on / off*, *piano* (joue tant qu'on appuie), avec boucle au choix.
-- **Un seul curseur d'effet** en haut à gauche : reverb par défaut, le bouton `FX` passe à écho, filtre ou mégaphone.
+- **Trois types de case** : *sample* (un son), *micro* (on parle tant qu'on appuie, glisser hors de la case annule)
+  et *FX* (effet de DJ sur tout ce qui joue : vinyl stop, reverb, écho, filtres, hachoir, cut).
+- **Samples** : *one shot*, *on / off* ou *piano*, boucle, recadrage, fondus, volume ; import d'un fichier ou prise au micro.
+- **Micro** : différé ou direct, débruiteur spectral réglable.
+- **Un curseur d'effet** en haut à gauche ; le bouton `FX` fait défiler les effets cochés dans le menu.
 - **STOP** coupe tout, y compris les queues de reverb et d'écho.
-- **ÉDIT** (appui long, pour ne pas y entrer par accident) : nom, couleur, volume, recadrage, import d'un son,
-  déplacement, suppression ; couleur et nom de chaque page.
+- **ÉDIT** (appui long) pour tout régler ; interface en français ou en anglais.
 - **Export / import** de toute la config (pages, réglages et sons) dans un seul fichier `.boucan`.
-- 16 sons d'origine, synthétisés par l'app : aucun enregistrement sous droits, mélodies du domaine public.
-- Aucune permission sensible, pas d'accès Internet, fonctionne hors ligne. Android 5.0 et plus.
+- Sons d'origine : enregistrements libres de droits de Wikimedia Commons (voir `sounds/CREDITS.md`).
+- Pas d'accès Internet, fonctionne hors ligne. Android 5.0 et plus.
 
 ## Installer
 
-Télécharger `dist/Boucan-1.0.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
+Télécharger `dist/Boucan-1.2.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
 depuis cette source quand Android le demande.
 
 ## Organisation
@@ -22,7 +24,9 @@ depuis cette source quand Android le demande.
 | Dossier | Contenu |
 | --- | --- |
 | `web/` | L'app elle-même (HTML, CSS, JavaScript ES5, sans dépendance). S'ouvre aussi dans un navigateur. |
-| `web/js/synth.js` | Synthèse des 16 sons d'origine. |
+| `web/js/factory.js` | Sons d'origine, généré par `sounds/build.py` à partir des extraits de `sounds/`. |
+| `web/js/mic.js` | Débruiteur et capture micro. |
+| `web/js/i18n.js` | Textes français et anglais. |
 | `web/js/core.js` | Stockage (IndexedDB), moteur audio (Web Audio), format `.boucan`. |
 | `web/js/ui.js` | Interface : cases, édition, recadrage, pages, menu. |
 | `android/` | Enveloppe Android : une `WebView` plein écran, sélecteur de fichier, enregistrement et partage de l'export. |

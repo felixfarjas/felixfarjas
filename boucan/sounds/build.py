@@ -13,26 +13,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, VIOLET, PINK, GREY = (
     '#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#546E7A')
 
-PAGES = [(('AMBIANCE', 'HYPE'), RED), (('RÉFS', 'TUNES'), BLUE)]
+PAGES = [(('SONS', 'SOUNDS'), RED)]
 SOUNDS = [
-    # page 1 : ambiance
-    ('klaxon',    ('KLAXON', 'HORN'),               RED,    'oneshot', False, 0, 6),
     ('sirene',    ('SIRÈNE', 'SIREN'),              ORANGE, 'toggle',  True,  0, 12),
+    ('alerte',    ('ALERTE', 'ALARM'),              PINK,   'toggle',  True,  0, 20),
     ('sifflet',   ('SIFFLET', 'WHISTLE'),           YELLOW, 'oneshot', False, 0, 4),
     ('corne',     ('CORNE DE BRUME', 'FOG HORN'),   GREEN,  'oneshot', False, 0, 8),
-    ('foule',     ('FOULE', 'CROWD'),               CYAN,   'toggle',  True,  0, 15),
-    ('applau',    ('BRAVO', 'APPLAUSE'), BLUE,  'oneshot', False, 0, 7),
-    ('roulement', ('ROULEMENT', 'DRUM ROLL'),       VIOLET, 'oneshot', False, 0, 8),
-    ('alerte',    ('ALERTE', 'ALARM'),              PINK,   'toggle',  True,  0, 20),
-    # page 2 : airs du domaine public
-    ('bella',     ('BELLA CIAO', 'BELLA CIAO'),     RED,    'toggle',  False, 0, 22),
-    ('cancan',    ('CANCAN', 'CAN-CAN'),            PINK,   'toggle',  False, 0, 20),
-    ('toreador',  ('TORÉADOR', 'TOREADOR'),         ORANGE, 'toggle',  False, 0, 20),
-    ('walkyries', ('WALKYRIES', 'VALKYRIES'),       BLUE,   'toggle',  False, 0, 22),
-    ('cucaracha', ('CUCARACHA', 'CUCARACHA'),       YELLOW, 'toggle',  False, 0, 18),
-    ('funebre',   ('MARCHE FUNÈBRE', 'FUNERAL MARCH'), GREY, 'toggle', False, 0, 20),
-    ('inter',     ('INTERNATIONALE', 'INTERNATIONALE'), CYAN, 'toggle', False, 0, 22),
-    ('trombone',  ('TROMBONE TRISTE', 'SAD TROMBONE'), VIOLET, 'oneshot', False, 0, 5),
+    ('applau',    ('BRAVO', 'APPLAUSE'),            BLUE,   'oneshot', False, 0, 7),
+    ('cucaracha', ('CUCARACHA', 'CUCARACHA'),       CYAN,   'toggle',  False, 0, 18),
+    ('toreador',  ('TORÉADOR', 'TOREADOR'),         VIOLET, 'toggle',  False, 0, 20),
 ]
 # Début de l'extrait quand le thème connu n'est pas au début de l'enregistrement.
 STARTS = {}
