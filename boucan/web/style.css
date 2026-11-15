@@ -1,0 +1,121 @@
+/* Boucan — pas de variables CSS, pas de grid, pas de gap : vieilles WebView. */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+  background: #000; color: #fff;
+  font-family: Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif; font-weight: 700;
+  -webkit-user-select: none; user-select: none;
+  -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+  -webkit-text-size-adjust: 100%;
+}
+body { position: fixed; left: 0; top: 0; }
+input[type=file] { display: none; }
+
+#app { position: absolute; left: 0; top: 0; right: 0; bottom: 0; touch-action: none; }
+.editOnly { display: none !important; }
+body.editing .editOnly { display: block !important; }
+body.editing .playOnly { display: none !important; }
+
+/* ---------- Barre du haut ---------- */
+#top { position: absolute; left: 0; right: 0; top: 0; height: 62px; padding: 5px 3px 3px; display: flex; }
+#top > div { margin: 0 3px; border-radius: 8px; height: 54px; overflow: hidden; }
+#fx { flex: 1; min-width: 0; position: relative; background: #222; }
+#fx .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #6b6b6b; border-right: 5px solid #fff; }
+#fx .lbl { position: absolute; left: 12px; top: 0; line-height: 54px; font-size: 15px; letter-spacing: 1px; white-space: nowrap; }
+.tbtn { flex: none; background: #222; line-height: 54px; text-align: center; font-size: 14px; letter-spacing: 1px; position: relative; }
+#fxBtn { width: 50px; }
+#menuBtn { flex: 1; }
+#stopBtn { width: 80px; background: #E53935; font-size: 17px; }
+#stopBtn.down { background: #fff; color: #000; }
+#editBtn { width: 58px; }
+#editBtn:before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 100%; background: #fff;
+  -webkit-transform: scaleX(0); transform: scaleX(0); -webkit-transform-origin: 0 0; transform-origin: 0 0;
+}
+#editBtn.holding:before { -webkit-transform: scaleX(1); transform: scaleX(1); -webkit-transition: -webkit-transform .55s linear; transition: transform .55s linear; }
+#editBtn span { position: relative; }
+#editBtn.holding span { color: #000; }
+body.editing #editBtn { background: #fff; color: #000; }
+
+#hint { position: absolute; left: 0; right: 0; top: 62px; height: 26px; line-height: 26px; text-align: center; font-size: 12px; letter-spacing: 1px; background: #FDD835; color: #000; overflow: hidden; white-space: nowrap; }
+
+/* ---------- Grille 2 x 4 ---------- */
+#grid { position: absolute; left: 0; right: 0; top: 62px; bottom: 66px; padding: 0; }
+body.editing #grid { top: 88px; }
+.pad { position: absolute; width: 50%; height: 25%; }
+.padIn {
+  position: absolute; left: 4px; top: 4px; right: 4px; bottom: 4px; border-radius: 10px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; text-align: center; background: #151515;
+}
+.padIn.empty { background: rgba(0, 0, 0, .45); }
+.padIn.loading { opacity: .35; }
+.padIn.down { opacity: .6; }
+.name { position: relative; padding: 0 8px; max-width: 100%; max-height: 100%; font-size: 6.6vw; line-height: 1.12; text-transform: uppercase; word-wrap: break-word; overflow-wrap: break-word; }
+.name.s2 { font-size: 5.4vw; }
+.name.s3 { font-size: 4.4vw; }
+.empty .name { font-size: 12vw; font-weight: 400; color: #fff; }
+.tag { position: absolute; left: 0; right: 0; bottom: 7px; font-size: 10px; letter-spacing: 1px; opacity: .65; }
+.prog {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: currentColor; opacity: .3;
+  -webkit-transform: scaleX(0); transform: scaleX(0); -webkit-transform-origin: 0 0; transform-origin: 0 0;
+}
+@-webkit-keyframes prog { from { -webkit-transform: scaleX(0); } to { -webkit-transform: scaleX(1); } }
+@keyframes prog { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+body.editing .padIn { outline: 3px dashed #fff; outline-offset: -7px; }
+body.editing .padIn.src { opacity: .4; }
+body.editing .tag { bottom: 13px; }
+
+/* ---------- Pages (en bas) ---------- */
+#tabs { position: absolute; left: 0; right: 0; bottom: 0; height: 66px; padding: 3px 1px 5px; display: flex; }
+.tab { flex: 1; min-width: 0; padding: 0 3px; }
+.tabIn {
+  position: relative; height: 58px; line-height: 50px; padding: 0 3px; border-radius: 8px; border-top: 7px solid #444;
+  background: #1c1c1c; color: #bbb; font-size: 14px; text-align: center; text-transform: uppercase;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.tab.cur .tabIn { line-height: 58px; border-top: 0; }
+.tab.add .tabIn { border-top-color: #1c1c1c; font-size: 26px; font-weight: 400; color: #fff; }
+.tab.live .tabIn:after { content: ''; position: absolute; right: 5px; bottom: 5px; width: 9px; height: 9px; border-radius: 5px; background: currentColor; }
+
+/* ---------- Feuilles d'édition ---------- */
+.sheet { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 10; }
+.sheetHead { position: absolute; left: 0; right: 0; top: 0; height: 64px; padding: 5px 6px; }
+.sheetTitle { position: absolute; left: 16px; right: 110px; top: 5px; line-height: 54px; font-size: 20px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-transform: uppercase; }
+.sheet .sheetOk { position: absolute; right: 6px; top: 5px; width: 96px; height: 54px; }
+.sheetBody { position: absolute; left: 0; right: 0; top: 64px; bottom: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 12px 48px; }
+.sec { margin: 14px 0 0; }
+.secLbl { font-size: 11px; letter-spacing: 1.5px; color: #999; margin-bottom: 6px; }
+.note { font-size: 12px; font-weight: 400; color: #999; margin-top: 6px; line-height: 1.35; }
+button { font: inherit; color: inherit; border: 0; margin: 0; padding: 0; outline: 0; -webkit-appearance: none; }
+.btn { display: block; width: 100%; min-height: 54px; padding: 6px 10px; border-radius: 8px; background: #222; color: #fff; font-size: 15px; letter-spacing: .5px; }
+.btn.on { background: #fff; color: #000; }
+.btn.danger { background: #3a1212; color: #ff8a80; }
+.btn.gap { margin-top: 10px; }
+.field {
+  display: block; width: 100%; height: 54px; padding: 0 12px; border: 2px solid #444; border-radius: 8px; background: #111; color: #fff;
+  font: inherit; font-size: 20px; outline: 0; -webkit-user-select: text; user-select: text; -webkit-appearance: none; text-transform: uppercase;
+}
+.field:focus { border-color: #fff; }
+.row { display: flex; margin: 0 -3px; }
+.row > * { flex: 1; min-width: 0; margin: 0 3px; }
+.sw { display: flex; flex-wrap: wrap; margin: -3px; }
+.sw > div { width: 20%; padding: 3px; }
+.sw > div > div { height: 46px; border-radius: 8px; }
+.sw > div.sel > div { box-shadow: inset 0 0 0 4px #000, 0 0 0 3px #fff; }
+.slider { position: relative; height: 54px; border-radius: 8px; background: #222; overflow: hidden; touch-action: none; }
+.slider .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: #6b6b6b; border-right: 5px solid #fff; }
+.slider .lbl { position: absolute; left: 12px; top: 0; line-height: 54px; font-size: 15px; }
+canvas.wave { display: block; width: 100%; height: 120px; border-radius: 8px; touch-action: none; }
+.row > .time { flex: 2.2; text-align: center; line-height: 54px; font-size: 16px; white-space: nowrap; }
+.nudge { font-size: 26px; font-weight: 400; }
+
+/* ---------- Superpositions ---------- */
+#toast {
+  position: absolute; left: 12px; right: 12px; bottom: 80px; padding: 14px 16px; border-radius: 8px; background: #fff; color: #000;
+  font-size: 15px; text-align: center; z-index: 40; display: none; pointer-events: none;
+}
+#busy { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: #000; z-index: 30; display: flex; align-items: center; justify-content: center; }
+#busyTxt { font-size: 18px; letter-spacing: 2px; text-align: center; padding: 0 24px; line-height: 1.5; }
+.ask { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, .88); z-index: 20; display: flex; align-items: center; justify-content: center; }
+.askBox { width: 86%; max-width: 420px; }
+.askTxt { font-size: 18px; line-height: 1.35; text-align: center; margin-bottom: 18px; }

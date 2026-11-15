@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>Boucan</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div id="fx" class="playOnly"><div class="fill"></div><div class="lbl" id="fxLbl">REVERB</div></div>
+    <div id="fxBtn" class="tbtn playOnly">FX</div>
+    <div id="menuBtn" class="tbtn editOnly">MENU</div>
+    <div id="stopBtn" class="tbtn">STOP</div>
+    <div id="editBtn" class="tbtn"><span id="editLbl">ÉDIT</span></div>
+  </div>
+  <div id="hint" class="editOnly"></div>
+  <div id="grid"></div>
+  <div id="tabs"></div>
+</div>
+<div id="toast"></div>
+<div id="busy"><div id="busyTxt">BOUCAN</div></div>
+<input type="file" id="fileAudio" accept="audio/*">
+<input type="file" id="fileConfig">
+<script src="js/synth.js"></script>
+<script src="js/core.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
