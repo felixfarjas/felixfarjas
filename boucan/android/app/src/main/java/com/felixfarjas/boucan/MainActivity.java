@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.media.AudioManager;
@@ -20,6 +21,7 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -50,6 +52,7 @@ public class MainActivity extends Activity {
     private static final String START_URL = "file:///android_asset/index.html";
     private static final int REQ_FILE = 1;
     private static final int REQ_SAVE = 2;
+    private static final int REQ_MIC = 3;
 
     private FrameLayout root;
     private WebView web;
@@ -58,6 +61,7 @@ public class MainActivity extends Activity {
     private OutputStream exportOut;
     private boolean exportFailed;
     private long lastBack;
+    private PermissionRequest micRequest;
     private volatile boolean french = true;
     private Vibrator vibrator;
 
@@ -197,6 +201,30 @@ public class MainActivity extends Activity {
     }
 
     private final class Chrome extends WebChromeClient {
+        // La page demande le micro : Android doit d'abord l'accorder à l'app.
+        @Override
+        public void onPermissionRequest(final PermissionRequest request) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    boolean audio = false;
+                    for (String r : request.getResources()) {
+                        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) audio = true;
+                    }
+                    if (!audio) {
+                        request.deny();
+                    } else if (Build.VERSION.SDK_INT < 23
+                            || checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                    } else {
+                        if (micRequest != null) micRequest.deny();
+                        micRequest = request;
+                        requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+                    }
+                }
+            });
+        }
+
         @Override
         public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
             if (fileCallback != null) fileCallback.onReceiveValue(null);
@@ -217,6 +245,19 @@ public class MainActivity extends Activity {
                 tell("noPicker");
             }
             return true;
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request != REQ_MIC || micRequest == null) return;
+        PermissionRequest r = micRequest;
+        micRequest = null;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+            r.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+        } else {
+            r.deny();
         }
     }
 

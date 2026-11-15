@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '1.1';
+  B.VERSION = '1.2';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -22,6 +22,8 @@
   B.FX = ['reverb', 'echo', 'highcut', 'lowcut', 'mega', 'disto', 'flanger', 'gate'];
   B.FX_DEFAULT = ['reverb', 'echo', 'highcut', 'lowcut'];
   B.FADES = [0, 0.1, 0.5, 2];
+  // effets DJ des cases FX (appliqués à tout ce qui joue)
+  B.PAD_FX = ['brake', 'reverb', 'echo', 'highcut', 'lowcut', 'gate', 'cut'];
   B.cfg = null;
 
   var uidN = 0;
@@ -111,11 +113,19 @@
     });
   }
   B.eachPad = function (fn) { eachPad(B.cfg, fn); };
+  // Tous les sons stockés dont une config a besoin (son joué + prise micro brute).
+  function sampleIds(cfg) {
+    var ids = [], seen = {};
+    eachPad(cfg, function (p) {
+      [p.sample, p.rawSample].forEach(function (id) { if (id && !seen[id]) { seen[id] = 1; ids.push(id); } });
+    });
+    return ids;
+  }
 
   // Supprime les sons qui ne sont plus utilisés par aucune case.
   B.gc = function () {
     var used = {};
-    eachPad(B.cfg, function (p) { used[p.sample] = 1; });
+    sampleIds(B.cfg).forEach(function (id) { used[id] = 1; });
     return D.keys('samples').then(function (keys) {
       return keys.reduce(function (ch, k) {
         if (used[k]) return ch;
@@ -209,7 +219,7 @@
   }
 
   /*
-   * Chaîne : voix -> bus -> coupe-bas -> coupe-haut -> [net | mégaphone | disto] -> mix
+   * Chaîne : voix et micro -> bus -> cut -> coupe-bas -> coupe-haut -> [net | mégaphone | disto] -> mix
    *   mix -> direct -> hachoir -> sortie        mix -> flanger -> hachoir
    *   mix -> reverb -> sortie                   mix -> écho -> sortie
    * sortie -> coupure (STOP) -> limiteur -> haut-parleur
@@ -225,7 +235,7 @@
       return b;
     }
 
-    var bus = A.bus = gain(1);
+    var bus = A.bus = gain(1), cutG = A.cutG = gain(1);
     var hp = A.hp = filter('highpass', 20), lp = A.lp = filter('lowpass', 20000);
     var clean = A.clean = gain(1), mix = gain(1), dry = A.dry = gain(1);
     var mHp = filter('highpass', 600), mLp = filter('lowpass', 2800);
@@ -246,7 +256,7 @@
     var fl = ctx.createDelay(0.05), flWet = A.flWet = gain(0), flFb = A.flFb = gain(0.3);
     fl.delayTime.value = 0.004;
 
-    bus.connect(hp); hp.connect(lp);
+    bus.connect(cutG); cutG.connect(hp); hp.connect(lp);
     lp.connect(clean); clean.connect(mix);
     lp.connect(mHp); mHp.connect(mLp); mLp.connect(mSh); mSh.connect(mega); mega.connect(mix);
     lp.connect(dSh); dSh.connect(disto); disto.connect(mix);
@@ -275,18 +285,24 @@
     }
   };
 
-  // Un seul effet actif à la fois ; a = dosage 0..1. À fond, l'effet est
-  // radical, comme sur une table de DJ.
-  A.setFx = function (type, a) {
-    var t = A.ctx.currentTime, tc = 0.03;
-    function on(k) { return type === k ? a : 0; }
+  // Deux sources d'effet se cumulent : le curseur (un effet, dosage 0..1) et
+  // les cases FX tenues ou enclenchées (à fond). À fond, l'effet est radical,
+  // comme sur une table de DJ.
+  A.fx = { type: 'reverb', amt: 0 };
+  A.fxPads = {}; // id de case -> effet
+
+  function applyFx(tc) {
+    var t = A.ctx.currentTime, amt = {}, id;
+    amt[A.fx.type] = A.fx.amt;
+    for (id in A.fxPads) amt[A.fxPads[id]] = 1;
+    function on(k) { return amt[k] || 0; }
     function set(p, v) { p.setTargetAtTime(v, t, tc); }
     var rev = on('reverb'), ech = on('echo'), hc = on('highcut'), lc = on('lowcut');
     var meg = on('mega'), dis = on('disto'), fla = on('flanger'), gat = on('gate');
     A.fxEcho = ech;
     // reverb : le son direct s'efface et s'assourdit, il ne reste presque que la queue
     set(A.revSend.gain, 3.2 * Math.pow(rev, 0.8));
-    set(A.dry.gain, 1 - 0.88 * rev - 0.5 * ech);
+    set(A.dry.gain, Math.max(0, 1 - 0.88 * rev - 0.5 * ech));
     set(A.eSend.gain, 1.2 * ech);
     if (!A.killed) set(A.fb.gain, 0.35 + 0.5 * ech);
     set(A.lp.frequency, 20000 * Math.pow(0.006, hc) * Math.pow(0.18, rev));
@@ -295,11 +311,44 @@
     set(A.hp.Q, 0.7 + 7 * lc);
     set(A.mega.gain, 1.3 * meg);
     set(A.disto.gain, dis);
-    set(A.clean.gain, 1 - meg - dis);
+    set(A.clean.gain, Math.max(0, 1 - meg - dis));
     set(A.flWet.gain, fla);
     set(A.flFb.gain, 0.3 + 0.6 * fla);
     set(A.trem.gain, 1 - gat / 2);
     set(A.tremDepth.gain, gat / 2);
+    A.cutG.gain.setTargetAtTime(on('cut') ? 0 : 1, t, 0.004);
+  }
+
+  A.setFx = function (type, a) {
+    A.fx = { type: type, amt: a };
+    applyFx(0.03);
+  };
+
+  // Vinyl stop : toutes les voix ralentissent jusqu'à l'arrêt, puis repartent.
+  function brake(on) {
+    var t = A.ctx.currentTime, id;
+    A.braked = on;
+    for (id in A.voices) {
+      var r = A.voices[id].src.playbackRate;
+      try {
+        r.cancelScheduledValues(t);
+        r.setValueAtTime(r.value, t);
+        r.linearRampToValueAtTime(on ? 0.001 : 1, t + (on ? 0.9 : 0.35));
+      } catch (e) {}
+    }
+  }
+
+  // Case FX : enclenche ou relâche un effet DJ sur tout ce qui joue.
+  A.padFx = function (id, type, on) {
+    var had = A.fxPads[id];
+    if (on) { unkill(); A.fxPads[id] = type; } else delete A.fxPads[id];
+    var k, braking = false;
+    for (k in A.fxPads) if (A.fxPads[k] === 'brake') braking = true;
+    if (braking !== !!A.braked) brake(braking);
+    // les filtres balaient (0,12 s), le reste claque
+    var kind = on ? type : had;
+    applyFx(kind === 'highcut' || kind === 'lowcut' ? 0.12 : 0.03);
+    if (A.onChange) A.onChange(id);
   };
 
   function unkill() {
@@ -312,6 +361,8 @@
     A.fb.gain.setTargetAtTime(0.35 + 0.5 * (A.fxEcho || 0), t, 0.01);
   }
 
+  A.unkill = unkill;
+
   A.range = function (pad, buf) {
     var d = buf.duration, s = Math.max(0, Math.min(pad.start || 0, d - 0.02));
     var e = Math.max(s + 0.02, Math.min(pad.end === undefined || pad.end === null ? d : pad.end, d));
@@ -319,8 +370,9 @@
   };
 
   // from (optionnel) : position de départ dans le son, pour reprendre après une pause.
-  A.play = function (pad, from) {
-    var buf = A.buffers[pad.sample];
+  // buf (optionnel) : joue ce son-là plutôt que celui de la case (prise micro).
+  A.play = function (pad, from, buf) {
+    buf = buf || A.buffers[pad.sample];
     if (!buf) return null;
     A.resume();
     unkill();
@@ -384,6 +436,11 @@
   A.stopAll = function () {
     var ids = Object.keys(A.voices), t = A.ctx.currentTime;
     ids.forEach(function (id) { A.stop(id, false, true); });
+    var fxIds = Object.keys(A.fxPads);
+    A.fxPads = {};
+    if (A.braked) brake(false);
+    if (fxIds.length) { applyFx(0.03); fxIds.forEach(function (id) { if (A.onChange) A.onChange(id); }); }
+    if (B.mic && B.mic.on) B.mic.stop(true);
     A.killed = true;
     A.kill.gain.cancelScheduledValues(t);
     A.kill.gain.setTargetAtTime(0, t, 0.008);
@@ -391,6 +448,13 @@
     A.fb.gain.setValueAtTime(0, t);
     if (A.killT) clearTimeout(A.killT);
     A.killT = setTimeout(function () { A.killT = null; unkill(); }, 3400);
+  };
+
+  // Échantillons bruts (mono) -> AudioBuffer.
+  A.pcmBuffer = function (pcm, sr) {
+    var b = A.ctx.createBuffer(1, Math.max(1, pcm.length), sr || A.ctx.sampleRate);
+    b.getChannelData(0).set(pcm);
+    return b;
   };
 
   A.load = function (id) {
@@ -451,22 +515,42 @@
     return u.buffer;
   }
 
+  // Page « direct » des sons d'origine : micro et effets DJ.
+  B.FACTORY_TOOLS = [
+    { type: 'mic', micMode: 'after', name: ['MICRO', 'MIC'], color: '#E53935' },
+    { type: 'mic', micMode: 'live', name: ['MÉGAPHONE', 'MEGAPHONE'], color: '#FB8C00' },
+    { type: 'fx', fx: 'brake', mode: 'gate', name: ['VINYL STOP', 'VINYL STOP'], color: '#FDD835' },
+    { type: 'fx', fx: 'reverb', mode: 'gate', name: ['REVERB', 'REVERB'], color: '#43A047' },
+    { type: 'fx', fx: 'echo', mode: 'gate', name: ['ÉCHO', 'ECHO'], color: '#00ACC1' },
+    { type: 'fx', fx: 'highcut', mode: 'gate', name: ['COUPE-HAUT', 'HIGH CUT'], color: '#1E88E5' },
+    { type: 'fx', fx: 'gate', mode: 'gate', name: ['HACHOIR', 'CHOPPER'], color: '#8E24AA' },
+    { type: 'fx', fx: 'cut', mode: 'gate', name: ['CUT', 'CUT'], color: '#EC407A' }
+  ];
+
   // Sons d'origine : enregistrements embarqués (js/factory.js), décodés puis
   // stockés comme n'importe quel son importé (premier lancement / remise à zéro).
   B.buildFactory = function (onProgress) {
     var defs = B.FACTORY, i = 0, en = B.lang === 'en';
     var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_PAGES.forEach(function (pg) { cfg.pages.push({ name: pg.name[en ? 1 : 0], color: pg.color, pads: blankPads() }); });
+    // dernière page : micro et effets DJ
+    var tools = { name: en ? 'LIVE' : 'DIRECT', color: '#ECEFF1', pads: [] };
+    B.FACTORY_TOOLS.forEach(function (d) {
+      var p = { id: B.uid('p'), type: d.type, name: d.name[en ? 1 : 0], color: d.color };
+      if (d.type === 'mic') { p.micMode = d.micMode; p.denoise = 0.5; p.vol = 1; }
+      else { p.fx = d.fx; p.mode = d.mode; }
+      tools.pads.push(p);
+    });
     return new Promise(function (res) {
       (function next() {
-        if (i >= defs.length) { res(cfg); return; }
+        if (i >= defs.length) { cfg.pages.push(tools); res(cfg); return; }
         var d = defs[i], k = i;
         function done() { i++; if (onProgress) onProgress(i, defs.length); setTimeout(next, 0); }
         var data;
         try { data = unb64(B.FACTORY_AUDIO[d.audio]); } catch (e) { done(); return; }
         A.importAudio(data).then(function (r) {
           cfg.pages[Math.floor(k / B.SLOTS)].pads[k % B.SLOTS] = {
-            id: B.uid('p'), name: d.name[en ? 1 : 0], color: d.color, mode: d.mode, loop: !!d.loop,
+            id: B.uid('p'), type: 'sample', name: d.name[en ? 1 : 0], color: d.color, mode: d.mode, loop: !!d.loop,
             vol: 1, sample: r.id, start: 0, end: r.buffer.duration, fadeIn: 0, fadeOut: d.fadeOut || 0
           };
         })['catch'](function () {}).then(done); // un son illisible laisse sa case vide
@@ -499,15 +583,34 @@
         page.name = str(pg.name, page.name, 12);
         page.color = color(pg.color, page.color);
         (pg.pads instanceof Array ? pg.pads : []).slice(0, B.SLOTS).forEach(function (p, i) {
-          if (!p || typeof p !== 'object' || typeof p.sample !== 'string') return;
-          if (hasSample && !hasSample(p.sample)) return;
-          page.pads[i] = {
-            id: B.uid('p'), name: str(p.name, '', 24), color: color(p.color, B.COLORS[i % B.COLORS.length]),
-            mode: p.mode === 'toggle' || p.mode === 'gate' ? p.mode : 'oneshot', loop: !!p.loop,
-            vol: num(p.vol, 1, 0, 1.5), sample: p.sample, start: num(p.start, 0, 0, 1e5),
-            end: typeof p.end === 'number' ? num(p.end, 0, 0, 1e5) : null,
-            fadeIn: num(p.fadeIn, 0, 0, 5), fadeOut: num(p.fadeOut, 0, 0, 5)
-          };
+          if (!p || typeof p !== 'object') return;
+          var base = { id: B.uid('p'), type: 'sample', name: str(p.name, '', 24), color: color(p.color, B.COLORS[i % B.COLORS.length]) };
+          if (p.type === 'mic') {
+            base.type = 'mic';
+            base.micMode = p.micMode === 'live' ? 'live' : 'after';
+            base.denoise = num(p.denoise, 0.5, 0, 1);
+            base.vol = num(p.vol, 1, 0, 1.5);
+          } else if (p.type === 'fx') {
+            base.type = 'fx';
+            base.fx = B.PAD_FX.indexOf(p.fx) >= 0 ? p.fx : 'brake';
+            base.mode = p.mode === 'toggle' ? 'toggle' : 'gate';
+          } else {
+            if (typeof p.sample !== 'string' || (hasSample && !hasSample(p.sample))) return;
+            base.mode = p.mode === 'toggle' || p.mode === 'gate' ? p.mode : 'oneshot';
+            base.loop = !!p.loop;
+            base.vol = num(p.vol, 1, 0, 1.5);
+            base.sample = p.sample;
+            base.start = num(p.start, 0, 0, 1e5);
+            base.end = typeof p.end === 'number' ? num(p.end, 0, 0, 1e5) : null;
+            base.fadeIn = num(p.fadeIn, 0, 0, 5);
+            base.fadeOut = num(p.fadeOut, 0, 0, 5);
+            // prise micro brute, pour pouvoir régler le débruiteur après coup
+            if (typeof p.rawSample === 'string' && (!hasSample || hasSample(p.rawSample))) {
+              base.rawSample = p.rawSample;
+              base.denoise = num(p.denoise, 0.5, 0, 1);
+            }
+          }
+          page.pads[i] = base;
         });
       }
       cfg.pages.push(page);
@@ -535,8 +638,7 @@
   function two(n) { return n < 10 ? '0' + n : '' + n; }
 
   B.exportParts = function () {
-    var ids = [], seen = {}, blobs = [];
-    eachPad(B.cfg, function (p) { if (!seen[p.sample]) { seen[p.sample] = 1; ids.push(p.sample); } });
+    var ids = sampleIds(B.cfg), blobs = [];
     return ids.reduce(function (ch, id) {
       return ch.then(function () { return D.get('samples', id); }).then(function (ab) { blobs.push(ab || new ArrayBuffer(0)); });
     }, Promise.resolve()).then(function () {

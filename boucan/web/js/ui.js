@@ -78,11 +78,11 @@
   // ====================== Rendu ======================
   function buildGrid() {
     for (var i = 0; i < B.SLOTS; i++) {
-      var p = { el: h('div', 'pad'), inn: h('div', 'padIn'), prog: h('div', 'prog'), name: h('div', 'name'), tag: h('div', 'tag') };
+      var p = { el: h('div', 'pad'), inn: h('div', 'padIn'), prog: h('div', 'prog'), name: h('div', 'name'), tag: h('div', 'tag'), ico: h('div', 'padIco') };
       p.el.style.left = (i % 2 * 50) + '%';
       p.el.style.top = (Math.floor(i / 2) * 25) + '%';
       p.el.setAttribute('data-i', i);
-      add(el.grid, add(p.el, add(p.inn, p.prog, p.name, p.tag)));
+      add(el.grid, add(p.el, add(p.inn, p.prog, p.ico, p.name, p.tag)));
       pads.push(p);
     }
   }
@@ -110,22 +110,32 @@
       p.inn.style.background = ''; p.inn.style.color = ''; p.inn.style.boxShadow = '';
       p.name.className = 'name';
       p.name.textContent = S.edit ? '+' : '';
-      p.tag.textContent = '';
+      p.tag.textContent = ''; p.ico.innerHTML = '';
+      p.inn.style.border = ''; p.inn.style.backgroundColor = '';
       setProg(p, null);
       return;
     }
-    var v = A.voices[pad.id], fg = ink(pad.color), nm = pad.name || '', longest = 0;
+    var type = pad.type || 'sample', mic = type === 'mic', fx = type === 'fx';
+    var v = A.voices[pad.id], lit = fx ? !!A.fxPads[pad.id] : !!v;
+    var fg = mic ? pad.color : ink(pad.color), nm = pad.name || '', longest = 0;
     nm.split(/\s+/).forEach(function (w) { if (w.length > longest) longest = w.length; });
-    if (!A.buffers[pad.sample]) cls += ' loading';
+    if (type === 'sample' && !A.buffers[pad.sample]) cls += ' loading';
+    if (mic) cls += ' mic';
+    if (fx) cls += ' fx' + (lit ? ' lit' : '');
     if (isHeld(i)) cls += ' down';
     if (S.moving && S.moving.pad === pad) cls += ' src';
     p.inn.className = cls;
-    p.inn.style.background = pad.color;
+    // micro : case noire cerclée de couleur ; FX : case hachurée
+    p.inn.style.background = '';
+    p.inn.style.backgroundColor = mic ? '#000' : pad.color;
+    p.inn.style.border = mic ? '5px solid ' + pad.color : '';
     p.inn.style.color = fg;
-    p.inn.style.boxShadow = v ? 'inset 0 0 0 6px ' + fg : '';
+    p.inn.style.boxShadow = lit ? 'inset 0 0 0 6px ' + fg : '';
+    p.ico.innerHTML = mic ? MIC_SVG : '';
+    if (fx) p.ico.textContent = 'FX';
     p.name.className = 'name' + (longest > 11 || nm.length > 22 ? ' s3' : longest > 8 || nm.length > 14 ? ' s2' : '');
     p.name.textContent = nm;
-    p.tag.textContent = t('mode.' + pad.mode) + (pad.loop ? ' · ' + t('loop') : '');
+    p.tag.textContent = mic ? t(pad.micMode === 'live' ? 'micLive' : 'micAfter') : t('mode.' + pad.mode) + (pad.loop ? ' · ' + t('loop') : '');
     setProg(p, v);
   }
 
@@ -136,7 +146,7 @@
 
   function renderTabs() {
     var live = {}, n = B.cfg.pages.length;
-    B.eachPad(function (p, pi) { if (A.voices[p.id]) live[pi] = 1; });
+    B.eachPad(function (p, pi) { if (A.voices[p.id] || A.fxPads[p.id]) live[pi] = 1; });
     el.tabs.innerHTML = '';
     B.cfg.pages.forEach(function (pg, k) {
       var t = h('div', 'tab' + (k === B.cfg.cur ? ' cur' : '') + (live[k] ? ' live' : ''));
@@ -175,13 +185,93 @@
     if (S.onVoice) S.onVoice(id);
   };
 
+  // ====================== Micro ======================
+  var MIC_SVG = '<svg viewBox="0 0 24 24" width="30" height="30"><rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4" stroke="currentColor" stroke-width="2" fill="none"/></svg>';
+  var BIN_SVG = '<svg viewBox="0 0 24 24" width="64" height="64"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var rec = null; // prise en cours
+
+  function recDraw() {
+    if (!rec) return;
+    var c = el.recWave, dpr = window.devicePixelRatio || 1, W = c.clientWidth * dpr, H = c.clientHeight * dpr;
+    if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+    var g = c.getContext('2d'), pk = B.mic.peaks, bw = 3 * dpr, gap = dpr, n = Math.floor(W / (bw + gap)), k;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = '#fff';
+    for (k = 0; k < n; k++) {
+      var v = pk[pk.length - 1 - k];
+      if (v === undefined) break;
+      var hh = Math.max(2 * dpr, Math.min(1, Math.sqrt(v) * 1.3) * H * 0.9);
+      g.fillRect(W - (k + 1) * (bw + gap), (H - hh) / 2, bw, hh);
+    }
+    var sec = Math.floor(B.mic.seconds);
+    el.recTxt.textContent = !rec.ready ? '…' : (rec.live ? t('live') : 'REC') + ' ' + Math.floor(sec / 60) + ':' + (sec % 60 < 10 ? '0' : '') + (sec % 60);
+    rec.raf = window.requestAnimationFrame(recDraw);
+  }
+  function recShow() {
+    var r = rec.rect, st = el.recBox.style;
+    st.left = r.left + 'px'; st.top = r.top + 'px'; st.width = r.width + 'px'; st.height = r.height + 'px';
+    el.recBox.style.borderColor = rec.color;
+    el.rec.className = (rec.tap ? 'tap' : 'hold') + (rec.inside ? '' : ' out');
+    el.recHint.textContent = rec.tap ? t('recTap') : rec.inside ? t('recHold') : t('recDrop');
+    el.rec.style.display = 'block';
+  }
+  function recBegin(o) {
+    rec = o;
+    rec.inside = true; rec.ready = false;
+    recShow();
+    rec.raf = window.requestAnimationFrame(recDraw);
+    var mine = rec;
+    B.mic.peaks = []; B.mic.seconds = 0;
+    B.mic.start({ denoise: o.denoise, live: o.live, vol: o.vol }).then(function () {
+      if (rec !== mine) { B.mic.stop(true); return; }
+      mine.ready = true;
+    }, function () {
+      if (rec === mine) recEnd(true);
+      toast(t('noMic'), 3500);
+    });
+  }
+  function recEnd(cancel) {
+    var r = rec;
+    if (!r) return;
+    rec = null;
+    window.cancelAnimationFrame(r.raf);
+    el.rec.style.display = 'none';
+    var pcm = B.mic.stop(cancel || !r.inside);
+    if (r.done) r.done(pcm);
+  }
+  function recMove(x, y) {
+    if (!rec || rec.tap) return;
+    var r = rec.rect, inside = x >= r.left - 8 && x <= r.right + 8 && y >= r.top - 8 && y <= r.bottom + 8;
+    if (inside !== rec.inside) { rec.inside = inside; buzz(); recShow(); }
+  }
+  // Case micro : on parle tant qu'on appuie ; glisser hors de la case annule.
+  function recHold(pad, i, key) {
+    recBegin({
+      key: key, rect: pads[i].inn.getBoundingClientRect(), color: pad.color, live: pad.micMode === 'live',
+      denoise: pad.denoise, vol: pad.vol,
+      done: function (pcm) {
+        if (pcm && pcm.length > A.ctx.sampleRate * 0.15) A.play(pad, undefined, A.pcmBuffer(pcm));
+      }
+    });
+  }
+  // Prise pour un sample (éditeur) : un appui démarre, un appui termine.
+  function recTap(done) {
+    var w = window.innerWidth, hgt = window.innerHeight;
+    recBegin({ tap: true, rect: { left: w * 0.08, top: hgt * 0.3, width: w * 0.84, height: 190 }, color: '#E53935', denoise: 0, done: done });
+  }
+
   // ====================== Jeu ======================
   function padDown(i, key) {
     var pad = page().pads[i];
-    if (!pad || !A.buffers[pad.sample]) return;
+    if (!pad) return;
+    var type = pad.type || 'sample';
+    if (type === 'sample' && !A.buffers[pad.sample]) return;
+    if (type === 'mic' && rec) return;
     buzz();
     held[key] = { pad: pad, i: i, pg: B.cfg.cur };
-    if (pad.mode === 'toggle' && A.voices[pad.id]) A.stop(pad.id);
+    if (type === 'fx') A.padFx(pad.id, pad.fx, pad.mode === 'toggle' ? !A.fxPads[pad.id] : true);
+    else if (type === 'mic') recHold(pad, i, key);
+    else if (pad.mode === 'toggle' && A.voices[pad.id]) A.stop(pad.id);
     else A.play(pad);
     renderPad(i);
   }
@@ -189,7 +279,10 @@
     var hd = held[key];
     if (!hd) return;
     delete held[key];
-    if (hd.pad.mode === 'gate') A.stop(hd.pad.id);
+    var type = hd.pad.type || 'sample';
+    if (type === 'fx') { if (hd.pad.mode !== 'toggle') A.padFx(hd.pad.id, hd.pad.fx, false); }
+    else if (type === 'mic') { if (rec && rec.key === key) recEnd(false); }
+    else if (hd.pad.mode === 'gate') A.stop(hd.pad.id);
     if (hd.pg === B.cfg.cur) renderPad(hd.i);
   }
   function padIndex(target) {
@@ -258,6 +351,15 @@
     }
     on(el.grid, 'touchend', end);
     on(el.grid, 'touchcancel', end);
+    on(el.grid, 'touchmove', function (ev) {
+      if (!rec) return;
+      for (var k = 0; k < ev.changedTouches.length; k++) {
+        var tc = ev.changedTouches[k];
+        if (rec && rec.key === 't' + tc.identifier) recMove(tc.clientX, tc.clientY);
+      }
+    });
+    on(window, 'mousemove', function (ev) { if (rec && rec.key === 'm') recMove(ev.clientX, ev.clientY); });
+    on(el.rec, 'click', function () { if (rec && rec.tap && rec.ready) recEnd(false); });
     on(el.grid, 'mousedown', function (ev) {
       A.resume();
       if (S.edit) return;
@@ -344,14 +446,7 @@
       return;
     }
     if (pg.pads[i]) { editPad(B.cfg.cur, i); return; }
-    pickAudio(function (res, name) {
-      var tr = A.autoTrim(res.buffer);
-      pg.pads[i] = { id: B.uid('p'), name: name, color: B.COLORS[i % B.COLORS.length], mode: 'oneshot', loop: false,
-        vol: 1, sample: res.id, start: tr[0], end: tr[1], fadeIn: 0, fadeOut: 0 };
-      B.saveNow();
-      renderAll();
-      editPad(B.cfg.pages.indexOf(pg), i);
-    });
+    newPad(i);
   }
 
   // ====================== Fichiers ======================
@@ -549,7 +644,7 @@
   // Son long : à la fermeture on ne garde que la partie recadrée.
   function finalizePad(pad) {
     var buf = A.buffers[pad.sample];
-    if (!buf || buf.duration <= B.KEEP_SEC) return Promise.resolve();
+    if (!buf || pad.rawSample || buf.duration <= B.KEEP_SEC) return Promise.resolve();
     var rg = A.range(pad, buf);
     if (rg[0] < 0.05 && rg[1] > buf.duration - 0.05) return Promise.resolve();
     return A.storeBuffer(buf, rg[0], rg[1]).then(function (r) {
@@ -558,13 +653,55 @@
     });
   }
 
+  // Valeurs de départ d'une case, par type (le nom et la couleur sont gardés).
+  function setType(pad, type, extra) {
+    var keep = { id: pad.id, name: pad.name, color: pad.color }, k;
+    for (k in pad) delete pad[k];
+    for (k in keep) pad[k] = keep[k];
+    pad.type = type;
+    if (type === 'mic') { pad.micMode = 'after'; pad.denoise = 0.5; pad.vol = 1; if (!pad.name) pad.name = t('typeMic'); }
+    else if (type === 'fx') { pad.fx = 'brake'; pad.mode = 'gate'; if (!pad.name) pad.name = t('pfx.brake'); }
+    else { pad.mode = 'oneshot'; pad.loop = false; pad.vol = 1; pad.fadeIn = 0; pad.fadeOut = 0; }
+    for (k in extra || {}) pad[k] = extra[k];
+    return pad;
+  }
+  function sampleFields(res) {
+    var tr = A.autoTrim(res.buffer);
+    return { sample: res.id, start: tr[0], end: tr[1] };
+  }
+
+  // Case vide : on choisit d'abord ce qu'on y met.
+  function newPad(i) {
+    var pg = page(), pi = B.cfg.cur;
+    function make(type, extra, name) {
+      pg.pads[i] = setType({ id: B.uid('p'), name: name || '', color: B.COLORS[i % B.COLORS.length] }, type, extra);
+      B.saveNow();
+    }
+    sheet(t('newPad'), function (body, sh) {
+      function big(label, note, fn) {
+        var b = h('button', 'btn big');
+        add(b, h('div', '', label), h('div', 'note', note));
+        on(b, 'click', fn);
+        sec(body, '', b);
+      }
+      function open() { sh.close(); renderAll(); editPad(pi, i); }
+      big(t('typeSample'), t('noteSample'), function () {
+        pickAudio(function (res, name) { make('sample', sampleFields(res), name); open(); });
+      });
+      big(t('typeMic'), t('noteMic'), function () { make('mic'); open(); });
+      big(t('typeFx'), t('noteFx'), function () { make('fx'); open(); });
+    });
+  }
+
   function editPad(pi, i) {
     var pg = B.cfg.pages[pi], pad = pg.pads[i];
     if (!pad) return;
-    var pausedAt = null, raf = null, wave, playBtn, playLbl, playIco;
+    var type = pad.type || 'sample';
+    var pausedAt = null, raf = null, wave = null, playLbl, playIco, times = function () {};
     function show() { if (pi === B.cfg.cur) renderPad(i); B.save(); }
     function halt() { pausedAt = null; A.stop(pad.id, false, true); }
     function playShow() {
+      if (!playIco) return;
       var on = !!A.voices[pad.id];
       playIco.className = on ? 'ico pause' : 'ico play';
       playLbl.textContent = t(on ? 'pause' : 'play');
@@ -575,78 +712,176 @@
       wave.head(v ? A.pos(v) : pausedAt);
       raf = window.requestAnimationFrame(tick);
     }
-
-    sheet(t('pad') + ' ' + (i + 1), function (body, sh) {
-      var change = h('button', 'btn accent', t('change'));
-      on(change, 'click', function () {
-        pickAudio(function (res, name) {
-          halt();
-          var tr = A.autoTrim(res.buffer);
-          pad.sample = res.id; pad.start = tr[0]; pad.end = tr[1];
-          if (!pad.name) pad.name = name;
-          wave.reload(); times(); show();
-        });
-      });
-      sec(body, '', change);
-
-      sec(body, t('name'), field(pad.name, 24, function (v) { pad.name = v; show(); }));
-      sec(body, t('color'), swatches(pad.color, function (c) { pad.color = c; show(); }));
-
-      var hint = h('div', 'note', t('hint.' + pad.mode));
-      var loop = h('button', 'btn gap');
-      function loopLbl() { loop.textContent = t(pad.loop ? 'loopOn' : 'loopOff'); loop.className = 'btn gap' + (pad.loop ? ' on' : ''); }
-      loopLbl();
-      on(loop, 'click', function () { halt(); pad.loop = !pad.loop; loopLbl(); show(); });
-      sec(body, t('trigger'), choice(modes(), pad.mode, function (m) {
-        halt(); pad.mode = m; hint.textContent = t('hint.' + m); show();
-      }), hint, loop);
-
-      var canvas = h('canvas', 'wave'), tS = h('div', 'time'), tE = h('div', 'time'), keep = h('div', 'note');
-      function times() {
-        var buf = A.buffers[pad.sample];
-        if (!buf) { tS.textContent = tE.textContent = '—'; keep.textContent = ''; return; }
-        var rg = A.range(pad, buf);
-        tS.textContent = t('start') + ' ' + rg[0].toFixed(2) + ' s';
-        tE.textContent = t('end') + ' ' + rg[1].toFixed(2) + ' s';
-        keep.textContent = t('cropNote', (rg[1] - rg[0]).toFixed(2)) + (buf.duration > B.KEEP_SEC ? t('keepNote') : '');
-      }
-      wave = waveform(canvas, pad, function () { halt(); times(); B.save(); });
-      function nudge(which, dt, lbl) {
-        var b = h('button', 'btn nudge', lbl);
-        repeat(b, function () { wave.nudge(which, dt); });
-        return b;
-      }
-      playBtn = h('button', 'btn gap playBtn'); playIco = h('span', 'ico play'); playLbl = h('span');
-      add(playBtn, playIco, playLbl);
-      on(playBtn, 'click', function () {
-        var v = A.voices[pad.id];
-        if (v) { pausedAt = A.pos(v); A.stop(pad.id, false, true); }
-        else { var from = pausedAt; pausedAt = null; A.play(pad, from); }
-      });
-      var rowS = add(h('div', 'row'), nudge('start', -0.01, '−'), tS, nudge('start', 0.01, '+'));
-      var rowE = add(h('div', 'row'), nudge('end', -0.01, '−'), tE, nudge('end', 0.01, '+'));
-      rowS.style.marginTop = rowE.style.marginTop = '8px';
-      sec(body, t('crop'), canvas, playBtn, rowS, rowE, keep);
-
-      function fades(key) {
-        return choice(B.FADES.map(function (f) { return [f, f ? f + ' s' : t('none')]; }), pad[key] || 0, function (f) {
-          halt(); pad[key] = f; B.save();
-        });
-      }
-      sec(body, t('fadeIn'), fades('fadeIn'));
-      sec(body, t('fadeOut'), fades('fadeOut'));
-
-      var vol = h('div', 'slider slim'), vFill = h('div', 'fill'), vLbl = h('div', 'lbl');
-      function volShow() { vFill.style.width = (pad.vol / 1.5 * 100) + '%'; vLbl.textContent = Math.round(pad.vol * 100) + ' %'; }
-      volShow();
-      slider(vol, function (v) {
+    function range01(cls, get, set, label) {
+      var s = h('div', 'slider' + (cls ? ' ' + cls : '')), f = h('div', 'fill'), l = h('div', 'lbl');
+      function paint() { f.style.width = (get() * 100) + '%'; l.textContent = label(); }
+      paint();
+      slider(s, function (v) { set(v); paint(); });
+      return add(s, f, l);
+    }
+    function volume(body) {
+      sec(body, t('volume'), range01('slim', function () { return pad.vol / 1.5; }, function (v) {
         v = Math.round(v * 30) / 20;
         pad.vol = Math.abs(v - 1) <= 0.1 ? 1 : v; // aimanté à 100 %
         var cur = A.voices[pad.id];
         if (cur) cur.g.gain.setTargetAtTime(pad.vol, A.ctx.currentTime, 0.02);
-        volShow(); B.save();
+        B.save();
+      }, function () { return Math.round(pad.vol * 100) + ' %'; }));
+    }
+
+    // Prise micro d'un sample : on garde la prise brute pour régler le débruiteur après coup.
+    var denT = null;
+    function reprocess() {
+      return A.load(pad.rawSample).then(function (raw) {
+        if (!raw) return;
+        var out = B.denoise(raw.getChannelData(0), raw.sampleRate, pad.denoise || 0);
+        return A.storeBuffer(A.pcmBuffer(out, raw.sampleRate)).then(function (r) {
+          var first = !pad.sample;
+          pad.sample = r.id;
+          if (first || pad.end === undefined) { var tr = A.autoTrim(r.buffer); pad.start = tr[0]; pad.end = tr[1]; }
+          if (wave) wave.reload();
+          times(); show();
+        });
       });
-      sec(body, t('volume'), add(vol, vFill, vLbl));
+    }
+
+    sheet(t('pad') + ' ' + (i + 1), function (body, sh) {
+      function reopen() { sh.close(); editPad(pi, i); }
+
+      if (type === 'sample') {
+        var change = h('button', 'btn accent', t('change')), micB = h('button', 'btn accent micBtn');
+        micB.innerHTML = MIC_SVG;
+        on(change, 'click', function () {
+          pickAudio(function (res, name) {
+            halt();
+            var f = sampleFields(res);
+            pad.sample = f.sample; pad.start = f.start; pad.end = f.end;
+            delete pad.rawSample; delete pad.denoise;
+            if (!pad.name) pad.name = name;
+            B.saveNow(); reopen();
+          });
+        });
+        on(micB, 'click', function () {
+          halt();
+          recTap(function (pcm) {
+            if (!pcm || pcm.length < 2000) return;
+            busy(t('importing'));
+            A.storeBuffer(A.pcmBuffer(pcm)).then(function (r) {
+              pad.rawSample = r.id; pad.sample = null; pad.end = undefined;
+              if (pad.denoise === undefined) pad.denoise = 0.5;
+              return reprocess();
+            }).then(function () { idle(); B.saveNow(); reopen(); }, function () { idle(); toast(t('noMic'), 3000); });
+          });
+        });
+        var top = add(h('div', 'row'), change, micB);
+        sec(body, '', top);
+      }
+
+      sec(body, t('name'), field(pad.name, 24, function (v) { pad.name = v; show(); }));
+      sec(body, t('color'), swatches(pad.color, function (c) { pad.color = c; show(); }));
+
+      if (type === 'mic') {
+        var mh = h('div', 'note', t('hint.' + pad.micMode));
+        sec(body, t('micMode'), choice([['after', t('micAfter')], ['live', t('micLive')]], pad.micMode, function (m) {
+          pad.micMode = m; mh.textContent = t('hint.' + m); show();
+        }), mh);
+        sec(body, t('denoiser'), range01('', function () { return pad.denoise; }, function (v) { pad.denoise = Math.round(v * 20) / 20; B.save(); },
+          function () { return Math.round(pad.denoise * 100) + ' %'; }), h('div', 'note', t('denoiseNote')));
+        volume(body);
+      } else if (type === 'fx') {
+        var grid = h('div', 'sw two'), fxBtns = [];
+        B.PAD_FX.forEach(function (f) {
+          var b = h('button', 'btn' + (f === pad.fx ? ' on' : ''), t('pfx.' + f));
+          on(b, 'click', function () {
+            A.padFx(pad.id, pad.fx, false);
+            if (!pad.name || pad.name === t('pfx.' + pad.fx)) pad.name = t('pfx.' + f);
+            pad.fx = f;
+            fxBtns.forEach(function (x) { x.className = 'btn'; });
+            b.className = 'btn on';
+            fxNote.textContent = t('pfxNote.' + f);
+            B.saveNow(); show();
+            body.querySelector('.field').value = pad.name;
+          });
+          fxBtns.push(b);
+          add(grid, add(h('div'), b));
+        });
+        var fxNote = h('div', 'note', t('pfxNote.' + pad.fx));
+        sec(body, t('effect'), grid, fxNote);
+        var fh = h('div', 'note', t('hint.fx' + pad.mode));
+        sec(body, t('trigger'), choice([['gate', t('mode.gate')], ['toggle', t('mode.toggle')]], pad.mode, function (m) {
+          A.padFx(pad.id, pad.fx, false); pad.mode = m; fh.textContent = t('hint.fx' + m); show();
+        }), fh);
+      } else {
+        var hint = h('div', 'note', t('hint.' + pad.mode));
+        var loop = h('button', 'btn gap');
+        var loopLbl = function () { loop.textContent = t(pad.loop ? 'loopOn' : 'loopOff'); loop.className = 'btn gap' + (pad.loop ? ' on' : ''); };
+        loopLbl();
+        on(loop, 'click', function () { halt(); pad.loop = !pad.loop; loopLbl(); show(); });
+        sec(body, t('trigger'), choice(modes(), pad.mode, function (m) {
+          halt(); pad.mode = m; hint.textContent = t('hint.' + m); show();
+        }), hint, loop);
+
+        var canvas = h('canvas', 'wave'), tS = h('div', 'time'), tE = h('div', 'time'), keep = h('div', 'note');
+        times = function () {
+          var buf = A.buffers[pad.sample];
+          if (!buf) { tS.textContent = tE.textContent = '—'; keep.textContent = ''; return; }
+          var rg = A.range(pad, buf);
+          tS.textContent = t('start') + ' ' + rg[0].toFixed(2) + ' s';
+          tE.textContent = t('end') + ' ' + rg[1].toFixed(2) + ' s';
+          keep.textContent = t('cropNote', (rg[1] - rg[0]).toFixed(2)) + (buf.duration > B.KEEP_SEC && !pad.rawSample ? t('keepNote') : '');
+        };
+        wave = waveform(canvas, pad, function () { halt(); times(); B.save(); });
+        var nudge = function (which, dt, lbl) {
+          var b = h('button', 'btn nudge', lbl);
+          repeat(b, function () { wave.nudge(which, dt); });
+          return b;
+        };
+        var playBtn = h('button', 'btn gap playBtn');
+        playIco = h('span', 'ico play'); playLbl = h('span');
+        add(playBtn, playIco, playLbl);
+        on(playBtn, 'click', function () {
+          var v = A.voices[pad.id];
+          if (v) { pausedAt = A.pos(v); A.stop(pad.id, false, true); }
+          else { var from = pausedAt; pausedAt = null; A.play(pad, from); }
+        });
+        var rowS = add(h('div', 'row'), nudge('start', -0.01, '−'), tS, nudge('start', 0.01, '+'));
+        var rowE = add(h('div', 'row'), nudge('end', -0.01, '−'), tE, nudge('end', 0.01, '+'));
+        rowS.style.marginTop = rowE.style.marginTop = '8px';
+        sec(body, t('crop'), canvas, playBtn, rowS, rowE, keep);
+
+        if (pad.rawSample) {
+          sec(body, t('denoiser'), range01('', function () { return pad.denoise || 0; }, function (v) {
+            pad.denoise = Math.round(v * 20) / 20;
+            halt();
+            if (denT) clearTimeout(denT);
+            denT = setTimeout(function () { denT = null; reprocess()['catch'](function () {}); }, 350);
+          }, function () { return Math.round((pad.denoise || 0) * 100) + ' %'; }), h('div', 'note', t('denoiseNote')));
+        }
+
+        var fades = function (key) {
+          return choice(B.FADES.map(function (f) { return [f, f ? f + ' s' : t('none')]; }), pad[key] || 0, function (f) {
+            halt(); pad[key] = f; B.save();
+          });
+        };
+        sec(body, t('fadeIn'), fades('fadeIn'));
+        sec(body, t('fadeOut'), fades('fadeOut'));
+        volume(body);
+      }
+
+      // Type de case : on peut en changer à tout moment.
+      sec(body, t('padType'), choice([['sample', t('typeSample')], ['mic', t('typeMic')], ['fx', t('typeFx')]], type, function (ty) {
+        if (ty === type) return;
+        halt(); A.padFx(pad.id, pad.fx, false);
+        if (ty === 'sample') {
+          pickAudio(function (res, name) {
+            if (pad.name === t('typeMic') || B.PAD_FX.some(function (f) { return pad.name === t('pfx.' + f); })) pad.name = name;
+            setType(pad, 'sample', sampleFields(res)); B.saveNow(); reopen();
+          });
+          return;
+        }
+        if (type !== 'sample' && (pad.name === t('typeMic') || B.PAD_FX.some(function (f) { return pad.name === t('pfx.' + f); }))) pad.name = '';
+        setType(pad, ty); B.saveNow(); reopen();
+      }));
 
       var move = h('button', 'btn', t('move')), clear = h('button', 'btn gap danger', t('clear'));
       on(move, 'click', function () {
@@ -656,21 +891,24 @@
       });
       on(clear, 'click', function () {
         ask(t('askClear', pad.name || i + 1), t('doClear'), function () {
-          halt();
+          halt(); A.padFx(pad.id, pad.fx, false);
           pg.pads[i] = null;
           sh.close();
         });
       });
       sec(body, t('padSec'), move, clear);
 
-      S.onVoice = function (id) { if (id === pad.id) { if (!A.voices[id] && pausedAt === null) wave.head(null); playShow(); } };
-      wave.reload(); times(); playShow();
-      raf = window.requestAnimationFrame(tick);
+      if (wave) {
+        S.onVoice = function (id) { if (id === pad.id) { if (!A.voices[id] && pausedAt === null) wave.head(null); playShow(); } };
+        wave.reload(); times(); playShow();
+        raf = window.requestAnimationFrame(tick);
+      }
     }, function () {
       S.onVoice = null;
       if (raf) window.cancelAnimationFrame(raf);
+      if (denT) { clearTimeout(denT); reprocess()['catch'](function () {}); }
       A.stop(pad.id, false, true);
-      var still = pg.pads[i] === pad;
+      var still = pg.pads[i] === pad && (pad.type || 'sample') === 'sample';
       (still ? finalizePad(pad) : Promise.resolve()).then(function () { return B.saveNow(); }).then(B.gc)['catch'](function () {});
       renderAll();
     });
@@ -705,7 +943,7 @@
       on(del, 'click', function () {
         if (B.cfg.pages.length < 2) { toast(t('keepOne')); return; }
         ask(t('askDelPage', pg.name), t('doDel'), function () {
-          pg.pads.forEach(function (p) { if (p) A.stop(p.id, false, true); });
+          pg.pads.forEach(function (p) { if (p) { A.stop(p.id, false, true); A.padFx(p.id, p.fx, false); } });
           B.cfg.pages.splice(B.cfg.pages.indexOf(pg), 1);
           B.cfg.cur = Math.min(B.cfg.cur, B.cfg.pages.length - 1);
           sh.close();
@@ -721,7 +959,7 @@
 
   function loadBuffers() {
     var ids = [], seen = {};
-    function take(p) { if (!seen[p.sample]) { seen[p.sample] = 1; ids.push(p.sample); } }
+    function take(p) { if (p.sample && !seen[p.sample]) { seen[p.sample] = 1; ids.push(p.sample); } }
     page().pads.forEach(function (p) { if (p) take(p); });
     B.eachPad(take);
     return new Promise(function (res) {
@@ -853,6 +1091,7 @@
   B.nativeMsg = function (key) { idle(); if (key) toast(t('n.' + key), 3000); };
   // Bouton retour : vrai si l'app a consommé l'appui.
   B.back = function () {
+    if (rec) { recEnd(true); return true; }
     if (S.ask) { S.ask(); return true; }
     if (S.sheets.length) { S.sheets[S.sheets.length - 1].close(); return true; }
     if (S.moving) { S.moving = null; renderAll(); return true; }
@@ -864,9 +1103,10 @@
   function fatal(msg) { el.busyTxt.textContent = msg; el.busy.style.display = 'flex'; }
 
   function boot() {
-    ['grid', 'tabs', 'toast', 'busy', 'busyTxt', 'fx', 'fxLbl', 'fxBtn', 'menuBtn', 'stopBtn', 'editBtn', 'editLbl', 'hint', 'fileAudio', 'fileConfig']
+    ['grid', 'tabs', 'toast', 'busy', 'busyTxt', 'fx', 'rec', 'recBox', 'recWave', 'recTxt', 'recHint', 'recBin', 'fxLbl', 'fxBtn', 'menuBtn', 'stopBtn', 'editBtn', 'editLbl', 'hint', 'fileAudio', 'fileConfig']
       .forEach(function (id) { el[id] = $(id); });
     el.fxFill = el.fx.querySelector('.fill');
+    el.recBin.innerHTML = BIN_SVG;
     buildGrid();
     try { A.init(); } catch (e) { fatal(t('noAudio')); return; }
     on(document, 'touchstart', A.resume);
