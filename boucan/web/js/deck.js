@@ -204,7 +204,7 @@
   var mode = null, cur = null;            // moteur du morceau en cours ('buf' | 'stream'), son tampon
   var bufs = {};                          // morceaux décodés gardés : celui en cours et le suivant
   var bsrc = null, bsg = null, bpos = 0, bLast = 0, bOn = false, bTick = null;
-  var rampT = null, rampI = null, braked = false;
+  var rampT = null, rampI = null, rateT2 = null, braked = false;
 
   function bSync() {
     var now = A.ctx.currentTime;
@@ -270,7 +270,6 @@
     };
     s.start(0, bpos);
     bsrc = s; bOn = true; bLast = A.ctx.currentTime;
-    bTick = setInterval(bSync, 50);
   }
 
   function auPlay() { var p = au.play(); if (p && p['catch']) p['catch'](function () {}); }
@@ -324,7 +323,12 @@
     if (mode === 'buf') bStop();
     else if (mode === 'stream' && au) au.pause();
   }
+  // À vitesse constante la position se déduit de l'horloge audio ; seul un
+  // changement de vitesse (vinyle, pitch) demande de l'intégrer pas à pas.
+  function tickOn() { bSync(); if (!bTick) bTick = setInterval(bSync, 50); }
+  function tickOff() { bSync(); if (bTick) { clearInterval(bTick); bTick = null; } }
   function clearRamp() {
+    tickOff();
     if (rampT) { clearTimeout(rampT); rampT = null; }
     if (rampI) { clearInterval(rampI); rampI = null; }
   }
@@ -333,12 +337,13 @@
     clearRamp();
     if (mode === 'buf' && bsrc) {
       var p = bsrc.playbackRate, now = A.ctx.currentTime;
+      tickOn();
       try {
         p.cancelScheduledValues(now);
         p.setValueAtTime(p.value, now);
         p.linearRampToValueAtTime(Math.max(0.001, to), now + sec);
       } catch (e) {}
-      rampT = setTimeout(function () { rampT = null; done(); }, sec * 1000);
+      rampT = setTimeout(function () { rampT = null; tickOff(); done(); }, sec * 1000);
     } else if (mode === 'stream' && au) {
       var t0 = Date.now(), from = au.playbackRate;
       rampI = setInterval(function () {
@@ -361,7 +366,12 @@
   D.setRate = function (k) {
     rateK = k;
     if (rampT || rampI) return;
-    if (mode === 'buf' && bsrc) { try { bsrc.playbackRate.setTargetAtTime(k, A.ctx.currentTime, 0.03); } catch (e) {} }
+    if (mode === 'buf' && bsrc) {
+      tickOn();
+      try { bsrc.playbackRate.setTargetAtTime(k, A.ctx.currentTime, 0.03); } catch (e) {}
+      if (rateT2) clearTimeout(rateT2);
+      rateT2 = setTimeout(function () { rateT2 = null; if (!rampT) tickOff(); }, 250);
+    }
     else if (mode === 'stream' && au) { try { au.playbackRate = k; } catch (e2) {} }
   };
 
@@ -369,6 +379,8 @@
   function after() { var i = index(); return i >= 0 ? D.queue[i + 1] || null : null; }
   D.playing = ePlaying;
   D.exact = function () { return mode === 'buf'; };
+  // Position et durée du morceau en cours, en secondes.
+  D.times = function () { return [ePos(), eDur()]; };
   D.progress = function () { var d = eDur(); return d > 0 ? Math.min(1, ePos() / d) : 0; };
   // Avance ou recule dans le morceau (0..1).
   D.seek = function (f) {
@@ -399,7 +411,7 @@
   // Décodage : il sert à la fois à la lecture exacte et à la forme d'onde
   // (240 valeurs de 0 à 255, gardée dans la base). Les ondes de la liste en
   // cours sont préparées d'avance, une par une, quand rien ne joue.
-  var have = null, bad = {}, waveBusy = false, waveT = null;
+  var have = null, bad = {}, waveBusy = false, waveT = null, settled = '';
   function waveKey(t) { return 'wave:' + t.id; }
   function known(cb) {
     if (have) { cb(); return; }
@@ -458,17 +470,20 @@
       waveT = null;
       known(function () {
         if (waveBusy || document.hidden) return;
-        var t = null, k, nx = after();
+        var t = null, k, nx = after(), idle = !ePlaying() && !Object.keys(A.voices).length;
+        var state = D.rev + '|' + (D.track ? D.track.id : 0) + '|' + (nx ? nx.id : 0) + '|' + idle;
+        if (state === settled) return;
         function ok(x) { return x && !bad[x.id] && (!x.ms || x.ms <= WAVE_MAX_MS); }
         function needBuf(x) { return ok(x) && fits(x) && !bufs[x.id]; }
         function needWave(x) { return ok(x) && !have[waveKey(x)]; }
         if (needBuf(D.track) || needWave(D.track)) t = D.track;
         else if (needBuf(nx)) t = nx;
         // les ondes d'avance attendent le silence : décoder pendant la lecture fait craquer un téléphone lent
-        else if (!ePlaying() && !Object.keys(A.voices).length) {
+        else if (idle) {
           for (k = 0; !t && k < D.queue.length && k < WAVE_AHEAD; k++) if (needWave(D.queue[k])) t = D.queue[k];
         }
-        if (!t) return;
+        if (!t) { settled = state; return; }
+        settled = '';
         waveBusy = true;
         compute(t, function (out) {
           waveBusy = false;

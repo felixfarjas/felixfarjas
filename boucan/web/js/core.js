@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.3';
+  B.VERSION = '2.4';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -866,11 +866,13 @@
   var MAGIC = 'BOUCAN01';
 
   function utf8(s) {
+    if (window.TextEncoder) return new window.TextEncoder().encode(s);
     var b = unescape(encodeURIComponent(s)), u = new Uint8Array(b.length), i;
     for (i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
     return u;
   }
   function unutf8(u) {
+    if (window.TextDecoder) return new window.TextDecoder('utf-8').decode(u);
     var s = '', i, K = 8000;
     for (i = 0; i < u.length; i += K) s += String.fromCharCode.apply(null, u.subarray(i, i + K));
     return decodeURIComponent(escape(s));

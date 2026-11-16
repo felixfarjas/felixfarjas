@@ -10,8 +10,8 @@ android {
         applicationId 'com.felixfarjas.boucan'
         minSdk 21
         targetSdk 35
-        versionCode 14
-        versionName '2.3'
+        versionCode 15
+        versionName '2.4'
     }
 
     // L'app web (../web) est embarquée telle quelle dans les assets.

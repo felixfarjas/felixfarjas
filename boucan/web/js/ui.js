@@ -219,7 +219,7 @@
 
   function renderFx() {
     // sous le nom de l'effet, en petit : sa cible quand ce n'est pas « les deux »
-    el.fxFill.style.background = B.FX_COLOR[B.cfg.fx.type] || '';
+    el.fxFill.style.background = el.fxBand.style.background = B.FX_COLOR[B.cfg.fx.type] || '';
     var only = B.cfg.fxTarget !== 'all', key = B.cfg.fx.type + '|' + B.cfg.fxTarget + '|' + B.lang;
     el.fxFill.style.width = (B.cfg.fx.amt * 100) + '%';
     el.fxFill.style.borderRightWidth = B.cfg.fx.amt > 0 ? '5px' : '0';
@@ -273,14 +273,19 @@
       add(h('div', 'plBtns'), cmdBtn('plBtn', 'prev', SVG_PREV), d.play, cmdBtn('plBtn', 'next', SVG_NEXT))), d.msg);
     return d;
   }
+  // N'écrit dans la page que si la valeur a changé.
+  function setText(e, v) { if (e.shownText !== v) { e.shownText = v; e.textContent = v; } }
+  function setHtml(e, v) { if (e.shownHtml !== v) { e.shownHtml = v; e.innerHTML = v; } }
+  function setShown(e, on) { var v = on ? '' : 'none'; if (e.shownDisp !== v) { e.shownDisp = v; e.style.display = v; } }
   function playerPaint(d) {
     var st = PL.st, ok = !!(st && st.perm && st.app);
-    d.msg.style.display = ok ? 'none' : '';
-    d.msg.textContent = !NATIVE || !window.BoucanNative.playerState ? t('plNoNative') : !st || st.perm ? t('plNone') : t('plPerm');
-    d.title.textContent = ok ? st.title || st.app : '';
-    d.artist.textContent = ok ? st.artist : '';
-    d.play.innerHTML = ok && st.playing ? SVG_PAUSE : SVG_PLAY;
-    d.art.style.backgroundImage = ok && PL.art ? 'url(data:image/jpeg;base64,' + PL.art + ')' : '';
+    setShown(d.msg, !ok);
+    setText(d.msg, !NATIVE || !window.BoucanNative.playerState ? t('plNoNative') : !st || st.perm ? t('plNone') : t('plPerm'));
+    setText(d.title, ok ? st.title || st.app : '');
+    setText(d.artist, ok ? st.artist : '');
+    setHtml(d.play, ok && st.playing ? SVG_PAUSE : SVG_PLAY);
+    var art = ok && PL.art ? PL.art : '';
+    if (d.shownArt !== art) { d.shownArt = art; d.art.style.backgroundImage = art ? 'url(data:image/jpeg;base64,' + art + ')' : ''; }
   }
   function shown(type) {
     return page().pads.some(function (p) { return p && p.type === type; });
@@ -308,16 +313,18 @@
 
   // LECTEUR (trois rangées) : lit les fichiers de musique du téléphone, par
   // dossier, album ou artiste, avec son propre volume (voir deck.js).
+  function clock(sec) { var m = Math.floor(sec / 60), s = Math.floor(sec - m * 60); return m + ':' + (s < 10 ? '0' : '') + s; }
   function deckDom() {
     var d = { el: h('div', 'deck'), head: cmdBtn('dkHead', 'dlist'), list: h('div', 'dkList'), msg: cmdBtn('dkMsg', 'dperm'),
-      now: h('div', 'dkNow'), wave: h('canvas', 'dkWave'), play: cmdBtn('plBtn plPlay', 'dtoggle'), vol: h('div', 'dkVol'), fill: h('div', 'fill'),
+      now: h('div', 'dkNow'), time: h('div', 'dkTime'), wave: h('canvas', 'dkWave'), play: cmdBtn('plBtn plPlay', 'dtoggle'), vol: h('div', 'dkVol'), fill: h('div', 'fill'),
       rev: -1, cur: -1, seekF: null, fg: '#fff' };
-    add(d.el, add(h('div', 'dkTop'), d.head, cmdBtn('dkFind', 'dfind', SVG_FIND)), add(h('div', 'dkMid'), d.list, d.msg), d.now, d.wave,
+    add(d.el, add(h('div', 'dkTop'), d.head, cmdBtn('dkFind', 'dfind', SVG_FIND)), add(h('div', 'dkMid'), d.list, d.msg), add(h('div', 'dkLine'), d.time, d.now), d.wave,
       add(h('div', 'dkBtns'), cmdBtn('plBtn', 'dprev', SVG_PREV), d.play, cmdBtn('plBtn', 'dnext', SVG_NEXT)), add(d.vol, d.fill, h('div', 'lbl', 'VOL')));
     slider(d.vol, function (v) {
       if (S.edit) return;
       B.deck.setVol(v);
-      d.fill.style.width = (v * 100) + '%';
+      d.shownVol = (v * 100) + '%';
+      d.fill.style.width = d.shownVol;
     });
     // la liste défile : un morceau se choisit par un vrai "click"
     // appui long sur un morceau : lui donner une couleur
@@ -414,9 +421,9 @@
   }
   function deckPaint(d) {
     var D = B.deck, ok = D.state === 'ok' && D.queue.length > 0, k;
-    d.msg.style.display = ok ? 'none' : '';
-    d.msg.textContent = D.state === 'none' ? t('plNoNative') : D.state === 'perm' ? t('dkPerm') : t('dkEmpty');
-    d.head.textContent = (D.listName() || t('dkAll')) + '  \u25be';
+    setShown(d.msg, !ok);
+    setText(d.msg, D.state === 'none' ? t('plNoNative') : D.state === 'perm' ? t('dkPerm') : t('dkEmpty'));
+    setText(d.head, (D.listName() || t('dkAll')) + '  \u25be');
     if (d.rev !== D.rev) {
       d.rev = D.rev; d.cur = -1;
       d.list.innerHTML = '';
@@ -436,9 +443,13 @@
       if (d.list.childNodes[cur]) d.list.childNodes[cur].className = 'dkRow cur';
       d.cur = cur;
     }
-    d.now.textContent = D.track ? D.track.t + (D.track.a ? ' — ' + D.track.a : '') : '';
-    d.play.innerHTML = D.wanted() ? SVG_PAUSE : SVG_PLAY;
-    d.fill.style.width = (B.cfg.deck.vol * 100) + '%';
+    setText(d.now, D.track ? D.track.t + (D.track.a ? ' — ' + D.track.a : '') : '');
+    // temps écoulé / durée, à droite du titre
+    var tm = D.track ? D.times() : null;
+    setText(d.time, tm && tm[1] > 0 ? clock(tm[0]) + ' / ' + clock(tm[1]) : '');
+    setHtml(d.play, D.wanted() ? SVG_PAUSE : SVG_PLAY);
+    var vw = (B.cfg.deck.vol * 100) + '%';
+    if (d.shownVol !== vw) { d.shownVol = vw; d.fill.style.width = vw; }
     waveDraw(d);
   }
   // Couleur et commentaire d'un morceau sur sa ligne.
@@ -2086,7 +2097,7 @@
   function fatal(msg) { el.busyTxt.textContent = msg; el.busy.style.display = 'flex'; }
 
   function boot() {
-    ['grid', 'tabs', 'toast', 'busy', 'busyTxt', 'fx', 'rec', 'recBox', 'recWave', 'recTxt', 'recHint', 'recBin', 'adj', 'adjBox', 'adjPie', 'adjTxt', 'adjName', 'fxLbl', 'fxBtn', 'menuBtn', 'stopBtn', 'editBtn', 'editLbl', 'hint', 'fileAudio', 'fileConfig']
+    ['grid', 'tabs', 'toast', 'busy', 'busyTxt', 'fx', 'rec', 'recBox', 'recWave', 'recTxt', 'recHint', 'recBin', 'adj', 'adjBox', 'adjPie', 'adjTxt', 'adjName', 'fxBand', 'fxLbl', 'fxBtn', 'menuBtn', 'stopBtn', 'editBtn', 'editLbl', 'hint', 'fileAudio', 'fileConfig']
       .forEach(function (id) { el[id] = $(id); });
     el.fxFill = el.fx.querySelector('.fill');
     el.recBin.innerHTML = BIN_SVG;
