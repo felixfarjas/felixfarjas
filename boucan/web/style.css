@@ -125,12 +125,17 @@ body.editing .mini .padIn { outline-width: 2px; outline-offset: -4px; }
 .dkRow.cur { background: rgba(255, 255, 255, .28); font-weight: 700; }
 .dkNow { flex: none; height: 20px; line-height: 20px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dkWave { flex: none; display: block; width: 100%; height: 36px; margin-top: 2px; touch-action: none; }
+.dkNote { float: right; max-width: 45%; margin-left: 8px; font-size: 12px; font-weight: 700; letter-spacing: .5px; opacity: .9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dkTh { display: inline-block; vertical-align: middle; width: 32px; height: 32px; margin: -3px 8px 0 0; border-radius: 4px; background-color: rgba(0, 0, 0, .35); background-size: cover; background-position: center; }
 .dkBtns { flex: none; height: 52px; display: flex; margin: 6px -3px; }
 .dkVol { flex: none; position: relative; height: 26px; border-radius: 6px; background: rgba(0, 0, 0, .35); overflow: hidden; }
 .dkVol .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255, 255, 255, .3); border-right: 3px solid currentColor; }
 .dkVol .lbl { position: absolute; left: 10px; top: 0; line-height: 26px; font-size: 10px; letter-spacing: 1px; opacity: .8; }
 .row.tight .btn { font-size: 13px; padding: 6px 2px; letter-spacing: 0; }
+.fxRow { margin-top: 6px; }
+.row > .more { flex: none; width: 56px; font-size: 20px; }
+.fxSet { padding: 2px 0 12px 12px; border-left: 3px solid #444; margin: 6px 0 4px 3px; }
+.fxSet .secLbl { margin-top: 10px; }
 .btn.lst { text-align: left; padding-left: 14px; }
 .btn.tdeck { background: #37474F; }
 .btn.thub { background: #546E7A; }

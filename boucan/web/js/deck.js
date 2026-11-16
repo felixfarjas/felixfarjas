@@ -11,8 +11,10 @@
   var A = B.audio;
   // state : 'none' (pas de natif), 'perm' (autorisation à donner), 'ok'
   var D = B.deck = { base: 'https://boucan.music/', state: 'none', tracks: [], queue: [], track: null, rev: 0, wave: null, common: '', onChange: null };
-  var au = null, gain = null, duckK = 1, rateT = null, errs = 0, want = false, rateK = 1;
-  var WAVE_N = 240, WAVE_MAX = 60 * 1024 * 1024, WAVE_AHEAD = 400;
+  var au = null, gain = null, duckK = 1, errs = 0, want = false, rateK = 1;
+  var WAVE_N = 240, WAVE_MAX = 80 * 1024 * 1024, WAVE_AHEAD = 400;
+  var BUF_MAX_MS = 12 * 60000;   // au-delà, un morceau ne tient pas en mémoire : lecture en flux
+  var WAVE_MAX_MS = 25 * 60000;  // au-delà, on ne le décode même pas pour son onde
 
   function nat() { return window.BoucanNative; }
   function cfg() { return B.cfg.deck; }
@@ -20,6 +22,9 @@
   function low(s) { return String(s || '').toLowerCase(); }
   function cmp(x, y) { return x < y ? -1 : x > y ? 1 : 0; }
   function under(t, path) { return !path || t.p === path || t.p.indexOf(path + '/') === 0; }
+  // Couleurs et commentaires sont rattachés au nom du fichier : ils suivent la
+  // config sur un autre téléphone qui a les mêmes fichiers.
+  D.key = function (t) { return t.f || String(t.id); };
   D.leaf = function (path) { return path ? path.substr(path.lastIndexOf('/') + 1) : ''; };
 
   D.load = function () {
@@ -29,7 +34,12 @@
     if (r === 'PERM') { D.state = 'perm'; D.tracks = []; }
     else {
       try { D.tracks = JSON.parse(r); } catch (e2) { D.tracks = []; }
-      D.tracks.forEach(function (t) { t.p = t.p || ''; });
+      D.tracks.forEach(function (t) {
+        t.p = t.p || '';
+        // anciennes configs : couleurs rangées par numéro de morceau
+        var c = cfg().colors[t.id];
+        if (c && t.f) { cfg().colors[t.f] = c; delete cfg().colors[t.id]; }
+      });
       D.state = 'ok';
     }
     // plus long dossier commun à tous les morceaux
@@ -102,7 +112,7 @@
     var root = D.root(), top = D.leaf(root), out = [];
     if (!top || /^\d+$/.test(top)) top = 'Musique';
     D.tracks.forEach(function (t) {
-      if (under(t, root) && t.f && t.z > 0) out.push({ id: t.id, dir: top + t.p.substr(root.length), name: t.f, size: t.z, c: cfg().colors[t.id] || '' });
+      if (under(t, root) && t.f && t.z > 0) out.push({ id: t.id, dir: top + t.p.substr(root.length), name: t.f, size: t.z, c: '' });
     });
     return out;
   };
@@ -120,12 +130,9 @@
   D.afterImport = function (music) {
     D.load();
     var root = '';
-    cfg().colors = {};
     music.forEach(function (m) {
       var t = imported(m), top = '/Boucan/' + m.dir.split('/')[0];
-      if (!t) return;
-      if (m.c) cfg().colors[t.id] = m.c;
-      if (!root) root = t.p.substr(0, t.p.indexOf(top) + top.length);
+      if (t && !root) root = t.p.substr(0, t.p.indexOf(top) + top.length);
     });
     D.setRoot(root);
   };
@@ -140,29 +147,12 @@
     var t = A.ctx.currentTime;
     try { A.fade(gain.gain, A.freeze(gain.gain, t), vol(), t, dur); } catch (e) { gain.gain.value = vol(); }
   }
-  function ensure() {
-    if (au) return;
-    au = new Audio();
-    au.crossOrigin = 'anonymous';
-    au.preload = 'auto';
-    try { au.preservesPitch = false; au.webkitPreservesPitch = false; } catch (e) {}
+  function out() {
+    if (gain) return;
     gain = A.ctx.createGain();
     gain.gain.value = vol();
-    A.ctx.createMediaElementSource(au).connect(gain);
     D.route();
-    au.addEventListener('ended', function () { D.next(true); }, false);
-    au.addEventListener('playing', function () { errs = 0; emit(); }, false);
-    au.addEventListener('pause', emit, false);
-    au.addEventListener('error', function () {
-      // fichier illisible : on passe au suivant, sans boucler sans fin
-      if (want && ++errs <= 3) D.next(true); else { want = false; emit(); }
-    }, false);
   }
-  // Effet PITCH : vitesse (et hauteur) de la musique.
-  D.setRate = function (k) {
-    rateK = k;
-    if (au && !rateT) { try { au.playbackRate = k; } catch (e) {} }
-  };
   // Avec ou sans les effets de Boucan.
   D.route = function () {
     if (!gain) return;
@@ -175,18 +165,182 @@
     B.save();
   };
 
-  function index() { return D.track ? D.queue.indexOf(D.track) : -1; }
-  D.playing = function () { return !!au && !au.paused && !au.ended; };
-  D.progress = function () { return au && au.duration > 0 ? Math.min(1, au.currentTime / au.duration) : 0; };
-  // Avance ou recule dans le morceau (0..1).
-  D.seek = function (f) {
-    if (!au || !D.track || !(au.duration > 0)) return;
-    try { au.currentTime = Math.max(0, Math.min(0.999, f)) * au.duration; } catch (e) {}
+  /*
+   * Deux moteurs de lecture, branchés sur le même volume :
+   *  - « mémoire » : le morceau entier est décodé, puis joué depuis la
+   *    mémoire. Les positions sont exactes (l'onde et le son coïncident,
+   *    on saute où on veut) et la reprise après une pause marche toujours.
+   *  - « flux » : le fichier est lu au fil de l'eau. Il démarre tout de suite,
+   *    mais ses positions ne sont qu'estimées. Il sert le temps du décodage,
+   *    et pour les fichiers trop longs pour tenir en mémoire.
+   * Un morceau démarre en flux et passe en mémoire dès qu'il est décodé.
+   */
+  var mode = null, cur = null;            // moteur du morceau en cours ('buf' | 'stream'), son tampon
+  var bufs = {};                          // morceaux décodés gardés : celui en cours et le suivant
+  var bsrc = null, bpos = 0, bLast = 0, bOn = false, bTick = null;
+  var rampT = null, rampI = null, braked = false;
+
+  function bSync() {
+    var now = A.ctx.currentTime;
+    if (bOn && bsrc && cur) bpos = Math.min(cur.duration, bpos + (now - bLast) * bsrc.playbackRate.value);
+    bLast = now;
+  }
+  function bStop() {
+    if (bTick) { clearInterval(bTick); bTick = null; }
+    if (bsrc) {
+      bSync();
+      var s = bsrc;
+      bsrc = null;
+      s.onended = null;
+      try { s.stop(0); } catch (e) {}
+      try { s.disconnect(); } catch (e2) {}
+    }
+    bOn = false;
+  }
+  function bStart(rate) {
+    bStop();
+    if (bpos >= cur.duration - 0.05) bpos = 0;
+    var s = A.ctx.createBufferSource();
+    s.buffer = cur;
+    s.playbackRate.value = rate;
+    s.connect(gain);
+    s.onended = function () {
+      if (bsrc !== s) return;
+      bSync();
+      var end = bpos >= cur.duration - 0.3;
+      bStop();
+      if (end && want) D.next(true); else emit();
+    };
+    s.start(0, bpos);
+    bsrc = s; bOn = true; bLast = A.ctx.currentTime;
+    bTick = setInterval(bSync, 50);
+  }
+
+  function auPlay() { var p = au.play(); if (p && p['catch']) p['catch'](function () {}); }
+  function ensureAu() {
+    if (au) return;
+    au = new Audio();
+    au.crossOrigin = 'anonymous';
+    au.preload = 'auto';
+    try { au.preservesPitch = false; au.webkitPreservesPitch = false; } catch (e) {}
+    A.ctx.createMediaElementSource(au).connect(gain);
+    au.addEventListener('ended', function () { if (mode === 'stream') D.next(true); }, false);
+    au.addEventListener('playing', function () { errs = 0; emit(); }, false);
+    au.addEventListener('pause', emit, false);
+    au.addEventListener('error', function () {
+      if (mode !== 'stream') return;
+      // fichier illisible : on passe au suivant, sans boucler sans fin
+      if (want && ++errs <= 3) D.next(true); else { want = false; emit(); }
+    }, false);
+  }
+  // Flux qui ne repart pas (appli revenue de l'arrière-plan) : on le recharge à la même position.
+  var dogT = null;
+  function watchdog() {
+    if (dogT) clearTimeout(dogT);
+    var at = au.currentTime;
+    dogT = setTimeout(function () {
+      dogT = null;
+      if (mode !== 'stream' || !want || !D.track || au.paused || au.currentTime !== at) return;
+      au.src = D.base + 't/' + D.track.id;
+      var once = function () {
+        au.removeEventListener('loadedmetadata', once, false);
+        try { au.currentTime = at; } catch (e) {}
+        auPlay();
+      };
+      au.addEventListener('loadedmetadata', once, false);
+      au.load();
+    }, 1500);
+  }
+
+  function ePlaying() { return mode === 'buf' ? bOn : mode === 'stream' && !!au && !au.paused && !au.ended; }
+  function ePos() { if (mode === 'buf') { bSync(); return bpos; } return mode === 'stream' && au ? au.currentTime || 0 : 0; }
+  function eDur() {
+    if (mode === 'buf') return cur.duration;
+    if (mode === 'stream' && au && au.duration > 0 && au.duration < 1e6) return au.duration;
+    return D.track && D.track.ms ? D.track.ms / 1000 : 0;
+  }
+  function ePlay(rate) {
+    if (mode === 'buf') bStart(rate);
+    else if (mode === 'stream') { try { au.playbackRate = Math.max(0.07, rate); } catch (e) {} auPlay(); watchdog(); }
+  }
+  function ePause() {
+    if (mode === 'buf') bStop();
+    else if (mode === 'stream' && au) au.pause();
+  }
+  function clearRamp() {
+    if (rampT) { clearTimeout(rampT); rampT = null; }
+    if (rampI) { clearInterval(rampI); rampI = null; }
+  }
+  // Fait glisser la vitesse de lecture vers "to" en sec secondes, puis appelle done.
+  function eRamp(to, sec, done) {
+    clearRamp();
+    if (mode === 'buf' && bsrc) {
+      var p = bsrc.playbackRate, now = A.ctx.currentTime;
+      try {
+        p.cancelScheduledValues(now);
+        p.setValueAtTime(p.value, now);
+        p.linearRampToValueAtTime(Math.max(0.001, to), now + sec);
+      } catch (e) {}
+      rampT = setTimeout(function () { rampT = null; done(); }, sec * 1000);
+    } else if (mode === 'stream' && au) {
+      var t0 = Date.now(), from = au.playbackRate;
+      rampI = setInterval(function () {
+        var k = Math.min(1, (Date.now() - t0) / (sec * 1000));
+        try { au.playbackRate = Math.max(0.07, from + (to - from) * k); } catch (e2) {}
+        if (k >= 1) { clearInterval(rampI); rampI = null; done(); }
+      }, 30);
+    } else done();
+  }
+  // Un freinage ou un redémarrage en cours est mené à son terme d'un coup.
+  function settle() {
+    if (!rampT && !rampI) return;
+    clearRamp();
+    if (braked) { braked = false; ePause(); glide(0); }
+    else if (mode === 'buf' && bsrc) { try { bsrc.playbackRate.cancelScheduledValues(0); bsrc.playbackRate.value = rateK; } catch (e) {} }
+    else if (mode === 'stream' && au) { try { au.playbackRate = rateK; } catch (e2) {} }
+  }
+
+  // Effet PITCH : vitesse (et hauteur) de la musique.
+  D.setRate = function (k) {
+    rateK = k;
+    if (rampT || rampI) return;
+    if (mode === 'buf' && bsrc) { try { bsrc.playbackRate.setTargetAtTime(k, A.ctx.currentTime, 0.03); } catch (e) {} }
+    else if (mode === 'stream' && au) { try { au.playbackRate = k; } catch (e2) {} }
   };
 
-  // Forme d'onde du morceau entier (240 valeurs de 0 à 255). Elle se calcule
-  // en décodant le fichier, une seule fois, puis reste dans la base. Les ondes
-  // de la liste en cours sont préparées d'avance, une par une, en tâche de fond.
+  function index() { return D.track ? D.queue.indexOf(D.track) : -1; }
+  function after() { var i = index(); return i >= 0 ? D.queue[i + 1] || null : null; }
+  D.playing = ePlaying;
+  D.exact = function () { return mode === 'buf'; };
+  D.progress = function () { var d = eDur(); return d > 0 ? Math.min(1, ePos() / d) : 0; };
+  // Avance ou recule dans le morceau (0..1).
+  D.seek = function (f) {
+    var d = eDur();
+    if (!D.track || !(d > 0)) return;
+    settle();
+    var sec = Math.max(0, Math.min(0.999, f)) * d;
+    if (mode === 'buf') { var on = bOn; bStop(); bpos = sec; if (on) bStart(rateK); }
+    else if (au) { try { au.currentTime = sec; } catch (e) {} }
+    emit();
+  };
+
+  // Le morceau en cours vient d'être décodé : la lecture passe du flux à la
+  // mémoire, à la même position.
+  function adopt() {
+    if (mode !== 'stream' || !D.track || !bufs[D.track.id] || rampT || rampI) return;
+    var on = ePlaying(), pos = au ? au.currentTime || 0 : 0;
+    if (dogT) { clearTimeout(dogT); dogT = null; }
+    mode = 'buf';
+    cur = bufs[D.track.id];
+    bpos = Math.min(pos, cur.duration - 0.05);
+    if (on) bStart(rateK);
+    try { au.pause(); } catch (e) {}
+    emit();
+  }
+
+  // Décodage : il sert à la fois à la lecture exacte et à la forme d'onde
+  // (240 valeurs de 0 à 255, gardée dans la base). Les ondes de la liste en
+  // cours sont préparées d'avance, une par une, quand rien ne joue.
   var have = null, bad = {}, waveBusy = false, waveT = null;
   function waveKey(t) { return 'wave:' + t.id; }
   function known(cb) {
@@ -196,6 +350,15 @@
       ks.forEach(function (k) { if (String(k).indexOf('wave:') === 0) have[k] = 1; });
       cb();
     }, function () { have = {}; cb(); });
+  }
+  function fits(t) { return !t.ms || t.ms <= BUF_MAX_MS; }
+  function wanted(t) { return t === D.track || t === after(); }
+  // Ne garde en mémoire que le morceau en cours et le suivant.
+  function trim() {
+    var keep = {}, k;
+    if (D.track) keep[D.track.id] = 1;
+    if (after()) keep[after().id] = 1;
+    for (k in bufs) if (!keep[k]) delete bufs[k];
   }
   function compute(t, done) {
     var x = new XMLHttpRequest();
@@ -219,6 +382,7 @@
         for (k = 0; k < WAVE_N; k++) out[k] = Math.round(255 * pk[k] / (top || 1));
         have[waveKey(t)] = 1;
         B.db.put('kv', waveKey(t), out)['catch'](function () {});
+        if (wanted(t) && fits(t)) bufs[t.id] = buf;
         done(out);
       }
       try {
@@ -228,52 +392,71 @@
     };
     x.send();
   }
-  // Prépare l'onde suivante : d'abord celle du morceau en cours, puis celles de la liste.
+  // Prochain décodage : le morceau en cours, puis le suivant (pour enchaîner
+  // sans attente), puis les ondes de la liste quand rien ne joue.
   function pump() {
     if (waveT || waveBusy || D.state !== 'ok') return;
     waveT = setTimeout(function () {
       waveT = null;
       known(function () {
         if (waveBusy || document.hidden) return;
-        var t = null, k;
-        function todo(x) { return x && !have[waveKey(x)] && !bad[x.id]; }
-        if (todo(D.track)) t = D.track;
+        var t = null, k, nx = after();
+        function ok(x) { return x && !bad[x.id] && (!x.ms || x.ms <= WAVE_MAX_MS); }
+        function needBuf(x) { return ok(x) && fits(x) && !bufs[x.id]; }
+        function needWave(x) { return ok(x) && !have[waveKey(x)]; }
+        if (needBuf(D.track) || needWave(D.track)) t = D.track;
+        else if (needBuf(nx)) t = nx;
         // les ondes d'avance attendent le silence : décoder pendant la lecture fait craquer un téléphone lent
-        if (!t && (D.playing() || Object.keys(A.voices).length)) return;
-        for (k = 0; !t && k < D.queue.length && k < WAVE_AHEAD; k++) if (todo(D.queue[k])) t = D.queue[k];
+        else if (!ePlaying() && !Object.keys(A.voices).length) {
+          for (k = 0; !t && k < D.queue.length && k < WAVE_AHEAD; k++) if (needWave(D.queue[k])) t = D.queue[k];
+        }
         if (!t) return;
         waveBusy = true;
         compute(t, function (out) {
           waveBusy = false;
           if (!out) bad[t.id] = 1;
-          else if (D.track === t) { D.wave = out; emit(); }
+          else if (D.track === t) { D.wave = out; adopt(); emit(); }
+          trim();
           pump();
         });
       });
-    }, 500);
+    }, 300);
   }
-  D.pump = pump;
+  D.pump = function () { adopt(); pump(); };
   function showWave(t) {
     D.wave = null;
     B.db.get('kv', waveKey(t)).then(function (w) {
       if (D.track !== t) return;
-      if (w && w.length === WAVE_N) { D.wave = w; emit(); } else pump();
+      if (w && w.length === WAVE_N) { D.wave = w; emit(); }
     })['catch'](function () {});
   }
 
   D.play = function (t) {
     if (!t) return;
-    ensure();
+    out();
     A.resume(); A.unkill();
-    stopRate();
+    clearRamp(); braked = false;
+    bStop();
+    if (au) { try { au.pause(); } catch (e) {} }
+    if (dogT) { clearTimeout(dogT); dogT = null; }
     D.track = t;
     want = true;
-    au.src = D.base + 't/' + t.id;
-    au.playbackRate = rateK;
-    var p = au.play();
-    if (p && p['catch']) p['catch'](function () {});
+    trim();
+    glide(0);
+    if (bufs[t.id]) {
+      // déjà décodé (c'était le « suivant ») : départ immédiat et exact
+      mode = 'buf'; cur = bufs[t.id]; bpos = 0;
+      bStart(rateK);
+    } else {
+      mode = 'stream'; cur = null;
+      ensureAu();
+      au.src = D.base + 't/' + t.id;
+      try { au.playbackRate = rateK; } catch (e2) {}
+      auPlay();
+    }
     showWave(t);
     emit();
+    pump();
   };
   // Lecture / pause : la musique freine ou repart comme un vinyle (durée
   // réglable, 0 = net).
@@ -281,74 +464,76 @@
     if (!D.track) { D.play(D.queue[0]); return; }
     A.resume(); A.unkill();
     var sec = cfg().brake;
-    if (au.paused || braked) { want = true; spin(true, sec * 0.6); }
+    if (!ePlaying() || braked) { want = true; spin(true, sec * 0.6); }
     else { want = false; spin(false, sec); }
   };
-  D.pause = function () { want = false; stopRate(); if (au && !au.paused) au.pause(); };
+  D.pause = function () {
+    want = false;
+    clearRamp(); braked = false;
+    ePause();
+    glide(0);
+  };
   D.next = function (auto) {
-    var i = index();
-    if (i + 1 < D.queue.length) D.play(D.queue[i + 1]);
+    var nx = after();
+    if (nx) D.play(nx);
     else if (auto) { want = false; emit(); }
   };
   D.prev = function () {
-    var i = index();
-    if (au && au.currentTime > 3 || i <= 0) { if (au && D.track) { try { au.currentTime = 0; } catch (e) {} } }
-    else D.play(D.queue[i - 1]);
+    if (!D.track) return;
+    if (ePos() > 3 || index() <= 0) D.seek(0);
+    else D.play(D.queue[index() - 1]);
   };
 
   // Micro tenu : 0 rien, 1 la musique baisse, 2 elle s'éteint puis se met en
   // pause. Le fondu dure B.cfg.duckFade secondes.
   var ducked = 0, resume = false, duckT = null;
-  D.duck = function (mode) {
-    if (mode === ducked) return;
-    var dur = B.cfg.duckFade, p;
+  D.duck = function (mode2) {
+    if (mode2 === ducked) return;
+    var dur = B.cfg.duckFade;
     if (duckT) { clearTimeout(duckT); duckT = null; }
-    if (ducked === 2 && resume && au && au.paused) { p = au.play(); if (p && p['catch']) p['catch'](function () {}); }
-    if (mode !== 2) resume = false;
-    ducked = mode;
-    duckK = mode === 1 ? 0.2 : mode === 2 ? 0 : 1;
-    if (mode === 2 && (D.playing() || resume)) {
+    if (ducked === 2 && resume && !ePlaying()) ePlay(rateK);
+    if (mode2 !== 2) resume = false;
+    ducked = mode2;
+    duckK = mode2 === 1 ? 0.2 : mode2 === 2 ? 0 : 1;
+    if (mode2 === 2 && (ePlaying() || resume)) {
       resume = true;
-      duckT = setTimeout(function () { duckT = null; if (ducked === 2 && au) au.pause(); }, dur * 1000 + 30);
+      duckT = setTimeout(function () { duckT = null; if (ducked === 2) ePause(); }, dur * 1000 + 30);
     }
     glide(dur);
   };
 
-  // Vinyl stop : la musique ralentit jusqu'à l'arrêt, ou repart.
-  var braked = false;
-  function stopRate() { if (rateT) { clearInterval(rateT); rateT = null; } braked = false; }
-  // up : repart (true) ou freine (false), en sec secondes.
+  // Vinyl stop : la musique ralentit jusqu'à l'arrêt (up faux) ou repart, en sec secondes.
   function spin(up, sec) {
-    if (rateT) { clearInterval(rateT); rateT = null; }
-    var p;
+    clearRamp();
+    if (!mode) return;
     if (sec < 0.05) {
       braked = false;
-      try { au.playbackRate = rateK; } catch (e) {}
-      if (up) { p = au.play(); if (p && p['catch']) p['catch'](function () {}); } else au.pause();
+      if (up) ePlay(rateK); else ePause();
+      glide(0.02);
+      emit();
       return;
     }
-    if (up && au.paused) { try { au.playbackRate = 0.07; } catch (e2) {} }
+    var on = ePlaying();
     braked = !up;
     // le volume accompagne le mouvement : il s'éteint sur la fin du freinage
     // (pas d'arrêt abrupt) et revient en douceur au redémarrage
     try {
-      var now = A.ctx.currentTime, cur = A.freeze(gain.gain, now);
-      if (up) A.fade(gain.gain, au.paused ? 0 : cur, vol(), now, Math.min(0.2, sec));
-      else A.fade(gain.gain, cur, 0, now + sec * 0.45, sec * 0.55);
-    } catch (e4) {}
-    if (up) { p = au.play(); if (p && p['catch']) p['catch'](function () {}); }
-    var t0 = Date.now(), from = au.playbackRate, dur = sec * 1000;
-    rateT = setInterval(function () {
-      var k = Math.min(1, (Date.now() - t0) / dur), r = from + ((up ? rateK : 0.07) - from) * k;
-      try { au.playbackRate = Math.max(0.07, r); } catch (e3) {}
-      if (k >= 1) { clearInterval(rateT); rateT = null; if (!up) { au.pause(); braked = false; glide(0); emit(); } }
-    }, 30);
+      var now = A.ctx.currentTime, lv = A.freeze(gain.gain, now);
+      if (up) A.fade(gain.gain, on ? lv : 0, vol(), now, Math.min(0.2, sec));
+      else A.fade(gain.gain, lv, 0, now + sec * 0.45, sec * 0.55);
+    } catch (e) {}
+    if (up && !on) ePlay(0.07);
+    eRamp(up ? rateK : 0.05, sec, function () {
+      if (!up) { ePause(); braked = false; glide(0); }
+      adopt();
+      emit();
+    });
     emit();
   }
   // Case FX « vinyl stop ».
   D.brake = function (on, time) {
-    if (!au) return;
-    if (on && !D.playing()) return;
+    if (!mode) return;
+    if (on && !ePlaying()) return;
     if (!on && !want) return;
     spin(!on, on ? time || 0.9 : 0.35);
   };

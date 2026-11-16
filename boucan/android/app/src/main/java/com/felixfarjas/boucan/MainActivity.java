@@ -417,7 +417,7 @@ public class MainActivity extends Activity {
             c = getContentResolver().query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, new String[]{
                     MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.ARTIST,
                     MediaStore.Audio.Media.ALBUM, MediaStore.Audio.Media.DATA, MediaStore.Audio.Media.TRACK,
-                    MediaStore.Audio.Media.DISPLAY_NAME, MediaStore.Audio.Media.SIZE
+                    MediaStore.Audio.Media.DISPLAY_NAME, MediaStore.Audio.Media.SIZE, MediaStore.Audio.Media.DURATION
             }, MediaStore.Audio.Media.IS_MUSIC + " != 0", null, null);
             while (c != null && c.moveToNext()) {
                 JSONObject o = new JSONObject();
@@ -431,6 +431,7 @@ public class MainActivity extends Activity {
                 o.put("n", c.getInt(5));
                 o.put("f", c.getString(6) == null ? "" : c.getString(6));
                 o.put("z", c.getLong(7));
+                o.put("ms", c.getLong(8));
                 out.put(o);
             }
         } catch (Exception ignored) {

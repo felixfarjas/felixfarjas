@@ -12,14 +12,14 @@
     };
   }
 
-  B.VERSION = '1.9';
+  B.VERSION = '2.0';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
   B.KEEP_SEC = 30;   // au-delà, on ne garde que la partie recadrée
   B.MAX_SEC = 600;   // durée max d'un son importé
   B.MAX_BYTES = 60 * 1024 * 1024;
-  B.FX = ['reverb', 'echo', 'highcut', 'lowcut', 'mega', 'disto', 'flanger', 'gate'];
+  B.FX = ['reverb', 'echo', 'highcut', 'lowcut', 'mega', 'disto', 'flanger', 'gate', 'pitchup', 'pitchdn'];
   B.FX_DEFAULT = ['reverb', 'echo', 'highcut', 'lowcut'];
   B.FADES = [0, 0.1, 0.5, 2];
   // effets DJ des cases FX (appliqués à tout ce qui joue)
@@ -31,6 +31,23 @@
   };
   B.PAD_FX_DEF = { brake: [0.55], reverb: [1], echo: [0.6, 0.8], highcut: [1, 0.26], lowcut: [1, 0.26], gate: [0.54, 1], loop: [0.35], pitch: [0.75], cut: [0] };
   B.TARGETS = ['all', 'pads', 'music'];
+  // Réglages des effets du curseur (curseurs 0..1) et leurs valeurs d'usine.
+  B.FX_PAR = { reverb: ['max'], echo: ['echoTime', 'repeats'], highcut: ['reso'], lowcut: ['reso'], mega: ['max'], disto: ['max'],
+    flanger: ['flRate', 'repeats'], gate: ['rate'], pitchup: ['range'], pitchdn: ['range'] };
+  B.FX_DEF = { reverb: [1], echo: [0.6, 0.93], highcut: [0.5], lowcut: [0.5], mega: [1], disto: [1], flanger: [0.49, 1], gate: [0.54],
+    pitchup: [0.48], pitchdn: [0.48] };
+  // Valeurs réelles des réglages d'un effet du curseur.
+  B.fxVal = function (fx) {
+    var set = (B.cfg && B.cfg.fxSet && B.cfg.fxSet[fx]) || [], d = B.FX_DEF[fx] || [0, 0];
+    var p1 = typeof set[0] === 'number' ? set[0] : d[0], p2 = typeof set[1] === 'number' ? set[1] : (d[1] || 0), v = {};
+    if (fx === 'reverb' || fx === 'mega' || fx === 'disto') v.max = p1;
+    else if (fx === 'echo') { v.time = 0.08 * Math.pow(10, p1); v.fb = 0.2 + 0.7 * p2; }
+    else if (fx === 'highcut' || fx === 'lowcut') v.q = 0.7 + 14 * p1;
+    else if (fx === 'flanger') { v.rate = 0.05 * Math.pow(40, p1); v.fb = p2; }
+    else if (fx === 'gate') v.hz = 2 * Math.pow(10, p1);
+    else if (fx === 'pitchup' || fx === 'pitchdn') v.st = 1 + Math.round(23 * p1);
+    return v;
+  };
   B.DUCKS = ['none', 'duck', 'pause'];
   // Cases larges (toute la largeur) et leur hauteur en rangées : le widget
   // Spotify et le lecteur de fichiers.
@@ -49,7 +66,7 @@
     var p1 = typeof pad.p1 === 'number' ? pad.p1 : d[0], p2 = typeof pad.p2 === 'number' ? pad.p2 : (d[1] || 0);
     var v = { type: f, amt: 1 };
     if (f === 'brake') v.time = 0.2 * Math.pow(15, p1);
-    else if (f === 'reverb') v.amt = 0.3 + 0.7 * p1;
+    else if (f === 'reverb') v.amt = 0.8 * p1; // de 0 à 80 %
     else if (f === 'echo') { v.time = 0.08 * Math.pow(10, p1); v.fb = 0.2 + 0.7 * p2; }
     else if (f === 'highcut' || f === 'lowcut') { v.amt = 0.3 + 0.7 * p1; v.sweep = 0.02 + 1.5 * p2 * p2; }
     else if (f === 'gate') { v.hz = 2 * Math.pow(10, p1); v.amt = 0.3 + 0.7 * p2; }
@@ -359,7 +376,7 @@
     // Oscillateurs lents : balayage du flanger, hachoir.
     A.tremDepth = gain(0);
     try {
-      var lfo = ctx.createOscillator(), lfoG = gain(0.0025);
+      var lfo = A.lfo = ctx.createOscillator(), lfoG = gain(0.0025);
       lfo.frequency.value = 0.3; lfo.connect(lfoG); lfoG.connect(fl.delayTime); lfo.start(0);
       var chop = A.chop = ctx.createOscillator();
       chop.type = 'square'; chop.frequency.value = 7;
@@ -431,7 +448,8 @@
   function applyFx(tc, ftc) {
     var t = A.ctx.currentTime, amt = {}, P = {}, id;
     if (ftc === undefined) ftc = tc;
-    amt[A.fx.type] = A.fx.amt;
+    var ty = A.fx.type, sv = B.fxVal(ty); // réglages de l'effet du curseur
+    amt[ty] = A.fx.amt * (sv.max === undefined ? 1 : sv.max);
     for (id in A.fxPads) {
       var f = A.fxPads[id];
       amt[f.type] = Math.max(amt[f.type] || 0, f.amt);
@@ -441,28 +459,30 @@
     function set(p, v, c) { p.setTargetAtTime(v, t, c || tc); }
     var rev = on('reverb'), ech = on('echo'), hc = on('highcut'), lc = on('lowcut');
     var meg = on('mega'), dis = on('disto'), fla = on('flanger'), gat = on('gate'), cut = on('cut') ? 1 : 0;
-    var hz = P.gate ? P.gate.hz : 7, lop = on('loop') ? 1 : 0;
-    var pk = P.pitch ? Math.pow(2, P.pitch.st / 12) : 1;
+    var hz = P.gate ? P.gate.hz : ty === 'gate' ? sv.hz : 7, lop = on('loop') ? 1 : 0;
+    var pk = P.pitch ? Math.pow(2, P.pitch.st / 12) : ty === 'pitchup' ? Math.pow(2, sv.st * A.fx.amt / 12) :
+      ty === 'pitchdn' ? Math.pow(2, -sv.st * A.fx.amt / 12) : 1;
     if (pk !== A.pitchK) { A.pitchK = pk; retune(); }
 
     link('rev', rev > 0.001); link('mega', meg > 0.001); link('disto', dis > 0.001);
     A.fxEcho = ech;
-    A.fxFb = P.echo ? P.echo.fb : 0.35 + 0.5 * ech;
+    A.fxFb = P.echo ? P.echo.fb : 0.35 + ((ty === 'echo' ? sv.fb : 0.85) - 0.35) * ech;
     // reverb : le son direct s'efface et s'assourdit, il ne reste presque que la queue
     set(A.revSend.gain, 3.2 * Math.pow(rev, 0.8));
     set(A.dry.gain, Math.max(0, 1 - 0.88 * rev - 0.5 * ech));
     set(A.eSend.gain, 1.2 * ech);
-    set(A.delay.delayTime, P.echo ? P.echo.time : 0.32, 0.05);
+    set(A.delay.delayTime, P.echo ? P.echo.time : ty === 'echo' ? sv.time : 0.32, 0.05);
     if (!A.killed) set(A.fb.gain, A.fxFb);
     set(A.lp.frequency, 20000 * Math.pow(0.006, hc) * Math.pow(0.18, rev), ftc);
-    set(A.lp.Q, 0.7 + 7 * hc, ftc);
+    set(A.lp.Q, 0.7 + (ty === 'highcut' && !P.highcut ? sv.q - 0.7 : 7) * hc, ftc);
     set(A.hp.frequency, 20 * Math.pow(400, lc), ftc);
-    set(A.hp.Q, 0.7 + 7 * lc, ftc);
+    set(A.hp.Q, 0.7 + (ty === 'lowcut' && !P.lowcut ? sv.q - 0.7 : 7) * lc, ftc);
     set(A.mega.gain, 1.3 * meg);
     set(A.disto.gain, dis);
     set(A.clean.gain, Math.max(0, 1 - meg - dis));
     set(A.flWet.gain, fla);
-    set(A.flFb.gain, 0.3 + 0.6 * fla);
+    set(A.flFb.gain, 0.3 + 0.6 * fla * (ty === 'flanger' ? sv.fb : 1));
+    if (A.lfo) set(A.lfo.frequency, ty === 'flanger' ? sv.rate : 0.3, 0.05);
     if (A.chop) set(A.chop.frequency, hz, 0.01);
     set(A.trem.gain, 1 - gat / 2);
     set(A.tremDepth.gain, gat / 2);
@@ -693,7 +713,7 @@
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', deck: { root: '', sub: '', vol: 0.8, brake: 0.5, colors: {} },
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, colors: {}, notes: {} },
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -791,7 +811,14 @@
     cfg.editHold = raw.editHold === true;
     cfg.duckFade = num(raw.duckFade, 0.3, 0, 3);
     var dk = raw.deck && typeof raw.deck === 'object' ? raw.deck : {};
-    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), brake: num(dk.brake, 0.5, 0, 3), colors: {} };
+    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), brake: num(dk.brake, 0.5, 0, 3), colors: {}, notes: {} };
+    // commentaires des morceaux (par nom de fichier)
+    var nts = dk.notes && typeof dk.notes === 'object' ? dk.notes : {}, nn = 0, nk;
+    for (nk in nts) if (nn < 3000 && typeof nts[nk] === 'string' && nts[nk]) { cfg.deck.notes[nk] = nts[nk].substr(0, 24); nn++; }
+    // réglages des effets du curseur
+    cfg.fxSet = {};
+    var fs = raw.fxSet && typeof raw.fxSet === 'object' ? raw.fxSet : {}, fk;
+    for (fk in B.FX_PAR) if (fs[fk] instanceof Array) cfg.fxSet[fk] = [num(fs[fk][0], B.FX_DEF[fk][0], 0, 1), num(fs[fk][1], B.FX_DEF[fk][1] || 0, 0, 1)];
     // couleurs données aux morceaux (par identifiant)
     var cols = dk.colors && typeof dk.colors === 'object' ? dk.colors : {}, nc = 0, ck;
     for (ck in cols) if (nc < 3000 && color(cols[ck], '')) { cfg.deck.colors[ck] = cols[ck]; nc++; }

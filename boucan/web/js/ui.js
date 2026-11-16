@@ -355,7 +355,7 @@
       for (k = a; k < b; k++) {
         if (rows[k].done) continue;
         rows[k].done = true;
-        rows[k].firstChild.style.backgroundImage = 'url(' + B.deck.base + 'a/' + B.deck.queue[k].id + ')';
+        rows[k].th.style.backgroundImage = 'url(' + B.deck.base + 'a/' + B.deck.queue[k].id + ')';
       }
     };
     on(d.list, 'scroll', function () {
@@ -414,8 +414,9 @@
       for (k = 0; k < D.queue.length && k < 500; k++) {
         var row = h('div', 'dkRow');
         row.setAttribute('data-ti', k);
+        row.note = h('span', 'dkNote'); row.th = h('span', 'dkTh');
         rowTint(row, D.queue[k]);
-        add(d.list, add(row, h('span', 'dkTh'), h('span', '', D.queue[k].t + (D.queue[k].a ? '  ·  ' + D.queue[k].a : ''))));
+        add(d.list, add(row, row.note, row.th, h('span', '', D.queue[k].t + (D.queue[k].a ? '  ·  ' + D.queue[k].a : ''))));
       }
       d.list.scrollTop = 0;
     }
@@ -431,29 +432,34 @@
     d.fill.style.width = (B.cfg.deck.vol * 100) + '%';
     waveDraw(d);
   }
+  // Couleur et commentaire d'un morceau sur sa ligne.
   function rowTint(row, track) {
-    var c = B.cfg.deck.colors[track.id];
+    var k = B.deck.key(track), c = B.cfg.deck.colors[k];
     row.style.backgroundColor = c ? 'rgba(' + parseInt(c.substr(1, 2), 16) + ',' + parseInt(c.substr(3, 2), 16) + ',' + parseInt(c.substr(5, 2), 16) + ',0.55)' : '';
     row.style.boxShadow = c ? 'inset 5px 0 0 ' + c : '';
+    if (row.note) row.note.textContent = B.cfg.deck.notes[k] || '';
   }
-  // Couleur d'un morceau (appui long dans la liste).
+  // Appui long sur un morceau : sa couleur et un court commentaire.
   function openColor(track) {
     if (!track) return;
+    var key = B.deck.key(track);
+    function refresh() {
+      B.save();
+      page().pads.forEach(function (p, i) {
+        if (!p || p.type !== 'deck') return;
+        var rows = pads[i].dk.list.childNodes, k = B.deck.queue.indexOf(track);
+        if (rows[k]) rowTint(rows[k], track);
+      });
+    }
     sheet(track.t, function (body, sh) {
-      function set(c) {
-        if (c) B.cfg.deck.colors[track.id] = c; else delete B.cfg.deck.colors[track.id];
-        B.save();
-        page().pads.forEach(function (p, i) {
-          if (!p || p.type !== 'deck') return;
-          var rows = pads[i].dk.list.childNodes, k = B.deck.queue.indexOf(track);
-          if (rows[k]) rowTint(rows[k], track);
-        });
-        sh.close();
-      }
+      sec(body, t('trackNote'), field(B.cfg.deck.notes[key] || '', 16, function (v) {
+        if (v) B.cfg.deck.notes[key] = v; else delete B.cfg.deck.notes[key];
+      }), h('div', 'note', t('trackNoteHelp')));
       var none = h('button', 'btn gap', t('noColor'));
+      function set(c) { if (c) B.cfg.deck.colors[key] = c; else delete B.cfg.deck.colors[key]; refresh(); sh.close(); }
       on(none, 'click', function () { set(''); });
-      sec(body, t('color'), swatches(B.cfg.deck.colors[track.id] || '', set), none);
-    });
+      sec(body, t('color'), swatches(B.cfg.deck.colors[key] || '', set), none);
+    }, refresh);
   }
   // Recherche d'un titre dans le dossier source.
   function openSearch() {
@@ -1387,10 +1393,70 @@
     row.className = 'row tight';
     return row;
   }
-  function openTarget() {
-    sheet(t('fxTarget'), function (body, sh) {
-      sec(body, '', targetChoice(function () { sh.close(); }), h('div', 'note', t('fxTargetNote')));
+  function fxParLabel(f, key) {
+    var v = B.fxVal(f), set = B.cfg.fxSet[f] || B.FX_DEF[f];
+    if (key === 'max') return Math.round(v.max * 100) + ' %';
+    if (key === 'echoTime') return Math.round(v.time * 1000) + ' ms';
+    if (key === 'flRate') return v.rate.toFixed(2) + ' Hz';
+    if (key === 'rate') return v.hz.toFixed(1) + ' Hz';
+    if (key === 'range') return '\u00b1 ' + v.st + ' ' + t('semi');
+    return Math.round((key === 'repeats' ? set[1] : set[0]) * 100) + ' %';
+  }
+  // Liste des effets du curseur : chacun se coche, et se déplie pour ses réglages.
+  function fxPanel(body) {
+    var box = h('div');
+    B.FX.forEach(function (f) {
+      var row = h('div', 'row fxRow'), b = h('button', 'btn', t('fx.' + f)), more = h('button', 'btn more', '\u25be');
+      var panel = h('div', 'fxSet'), paints = [];
+      function paint() { b.className = 'btn' + (B.cfg.fxList.indexOf(f) >= 0 ? ' on' : ''); }
+      paint();
+      on(b, 'click', function () {
+        var k = B.cfg.fxList.indexOf(f);
+        if (k >= 0) {
+          if (B.cfg.fxList.length < 2) { toast(t('keepFx')); return; }
+          B.cfg.fxList.splice(k, 1);
+          if (B.cfg.fx.type === f) setFx(B.cfg.fxList[0], 0);
+        } else {
+          B.cfg.fxList = B.FX.filter(function (x) { return x === f || B.cfg.fxList.indexOf(x) >= 0; });
+        }
+        paint(); B.save();
+      });
+      B.FX_PAR[f].forEach(function (key, k) {
+        var sl = rangeS(function () { return (B.cfg.fxSet[f] || B.FX_DEF[f])[k]; }, function (v) {
+          var cur = (B.cfg.fxSet[f] || B.FX_DEF[f]).slice();
+          cur[k] = Math.round(v * 100) / 100;
+          B.cfg.fxSet[f] = cur;
+          A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
+          B.save();
+        }, function () { return fxParLabel(f, key); });
+        paints.push(sl.paint);
+        add(panel, h('div', 'secLbl', t('fxp.' + key)), sl);
+      });
+      var reset = h('button', 'btn gap', t('fxFactory'));
+      on(reset, 'click', function () {
+        delete B.cfg.fxSet[f];
+        paints.forEach(function (p) { p(); });
+        A.setFx(B.cfg.fx.type, B.cfg.fx.amt);
+        B.save();
+      });
+      add(panel, reset);
+      panel.style.display = 'none';
+      on(more, 'click', function () {
+        var open = panel.style.display === 'none';
+        panel.style.display = open ? '' : 'none';
+        more.textContent = open ? '\u25b4' : '\u25be';
+        more.className = 'btn more' + (open ? ' on' : '');
+      });
+      add(box, add(row, b, more), panel);
     });
+    sec(body, t('fxList'), box, h('div', 'note', t('fxNote')));
+  }
+  // Appui long sur le bouton FX : cible des effets, effets disponibles et leurs réglages.
+  function openTarget() {
+    sheet(t('fxSheet'), function (body) {
+      sec(body, t('fxTarget'), targetChoice(), h('div', 'note', t('fxTargetNote')));
+      fxPanel(body);
+    }, renderFx);
   }
 
   // Curseur fin d'une feuille de réglages.
@@ -1399,6 +1465,7 @@
     function paint() { f.style.width = (get() * 100) + '%'; l.textContent = label(); }
     paint();
     slider(s, function (v) { set(v); paint(); }, true);
+    s.paint = paint;
     return add(s, f, l);
   }
 
@@ -1826,31 +1893,7 @@
 
       sec(body, t('fxTarget'), targetChoice(), h('div', 'note', t('fxTargetNote')));
 
-      // Effets proposés par le bouton FX.
-      var fxBox = h('div', 'sw two');
-      B.FX.forEach(function (f) {
-        var cell = h('div'), b = h('button', 'btn', t('fx.' + f));
-        function paint() { b.className = 'btn' + (B.cfg.fxList.indexOf(f) >= 0 ? ' on' : ''); }
-        paint();
-        on(b, 'click', function () {
-          var k = B.cfg.fxList.indexOf(f);
-          if (k >= 0) {
-            if (B.cfg.fxList.length < 2) { toast(t('keepFx')); return; }
-            B.cfg.fxList.splice(k, 1);
-            if (B.cfg.fx.type === f) setFx(B.cfg.fxList[0], 0);
-          } else {
-            B.cfg.fxList = B.FX.filter(function (x) { return x === f || B.cfg.fxList.indexOf(x) >= 0; });
-          }
-          paint(); B.save();
-        });
-        add(fxBox, add(cell, b));
-      });
-      sec(body, t('fxList'), fxBox, h('div', 'note', t('fxNote')));
-
-      var rootB = btn('', '', function () { openRoots(rootLbl); });
-      function rootLbl() { rootB.textContent = rootLabel(B.cfg.deck.root); }
-      rootLbl();
-      sec(body, t('dkRoot'), rootB, h('div', 'note', t('dkRootHelp')));
+      fxPanel(body);
 
       sec(body, t('lang'), choice(B.LANGS, B.lang, function (l) {
         B.lang = B.cfg.lang = l;
