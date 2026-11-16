@@ -57,9 +57,11 @@
     var N = nat(), r;
     if (!N || !N.musicList) { D.state = 'none'; emit(); return; }
     try { r = N.musicList(); } catch (e) { r = '[]'; }
-    if (r === 'PERM') { D.state = 'perm'; D.tracks = []; }
+    if (r === 'PERM') { D.state = 'perm'; D.tracks = []; D.all = []; }
     else {
-      try { D.tracks = JSON.parse(r); } catch (e2) { D.tracks = []; }
+      try { D.all = JSON.parse(r); } catch (e2) { D.all = []; }
+      // les morceaux « retirés » ne sont plus montrés (leur fichier reste sur le téléphone)
+      D.tracks = D.all.filter(function (t) { return !cfg().hidden[t.f || String(t.id)]; });
       D.tracks.forEach(function (t) {
         t.p = t.p || '';
         // anciennes configs : couleurs rangées par numéro de morceau
@@ -162,6 +164,13 @@
     });
     D.setRoot(root);
   };
+  // Retire un morceau de l'app, ou le rétablit ; le fichier n'est jamais touché.
+  D.hide = function (t, on) {
+    if (on) cfg().hidden[D.key(t)] = 1; else delete cfg().hidden[D.key(t)];
+    B.save();
+    D.load();
+  };
+  D.hiddenList = function () { return (D.all || []).filter(function (t) { return cfg().hidden[D.key(t)]; }); };
   D.setSub = function (sub) { cfg().sub = sub; relist(); };
   D.setRoot = function (root) { cfg().root = root; cfg().sub = ''; relist(); };
   D.listName = function () { var s = cfg().sub; return s && s !== '.' ? D.leaf(s) : D.leaf(cfg().root); };
@@ -240,6 +249,14 @@
     } catch (e) { try { s.stop(0); } catch (e2) {} }
     setTimeout(function () { try { s.disconnect(); g.disconnect(); } catch (e3) {} }, sec * 1000 + 300);
   }
+  // Fondu croisé « à puissance constante » : pendant que l'un descend et que
+  // l'autre monte, le volume perçu reste le même (pas de creux au milieu).
+  function eqFade(p, up, from, t0, dur) {
+    var n = 32, c = new Float32Array(n), i, x;
+    for (i = 0; i < n; i++) { x = i / (n - 1) * Math.PI / 2; c[i] = up ? Math.sin(x) : from * Math.cos(x); }
+    try { p.setValueAtTime(c[0], t0); p.setValueCurveAtTime(c, t0, dur); }
+    catch (e) { p.setValueAtTime(c[0], t0); p.linearRampToValueAtTime(up ? 1 : 0, t0 + dur); }
+  }
   // Fait taire en fondu la lecture en cours, détachée (fondu croisé d'un saut dans le morceau).
   function fadeOff(sec) {
     if (!bsrc) return;
@@ -248,17 +265,18 @@
     var s = bsrc, g = bsg, now = A.ctx.currentTime;
     bsrc = null; bsg = null; bOn = false;
     s.onended = null;
-    try { A.fade(g.gain, A.freeze(g.gain, now), 0, now, sec); s.stop(now + sec + 0.05); } catch (e) { try { s.stop(0); } catch (e2) {} }
+    try { eqFade(g.gain, false, A.freeze(g.gain, now), now, sec); s.stop(now + sec + 0.05); } catch (e) { try { s.stop(0); } catch (e2) {} }
     setTimeout(function () { try { s.disconnect(); g.disconnect(); } catch (e3) {} }, sec * 1000 + 300);
   }
-  // fadeIn (optionnel) : entrée en fondu, en secondes.
-  function bStart(rate, fadeIn) {
+  // fadeIn (optionnel) : entrée en fondu, en secondes ; xf : moitié montante d'un fondu croisé.
+  function bStart(rate, fadeIn, xf) {
     bStop();
     if (bpos >= cur.duration - 0.05) bpos = 0;
     var s = A.ctx.createBufferSource(), g = A.ctx.createGain();
     s.buffer = cur;
     s.playbackRate.value = rate;
-    if (fadeIn) { g.gain.setValueAtTime(0, A.ctx.currentTime); A.fade(g.gain, 0, 1, A.ctx.currentTime, fadeIn); }
+    if (fadeIn && xf) eqFade(g.gain, true, 1, A.ctx.currentTime, fadeIn);
+    else if (fadeIn) { g.gain.setValueAtTime(0, A.ctx.currentTime); A.fade(g.gain, 0, 1, A.ctx.currentTime, fadeIn); }
     s.connect(g); g.connect(gain);
     bsg = g;
     s.onended = function () {
@@ -308,8 +326,23 @@
     }, 1500);
   }
 
+  // Le décodage d'un morceau « en attente » est arrivé : il part pile à son
+  // point de départ, avec son fondu d'entrée.
+  function ready() {
+    if (mode !== 'wait' || !D.track || !bufs[D.track.id]) return;
+    var cu = D.cue(D.track);
+    mode = 'buf'; cur = bufs[D.track.id];
+    bpos = Math.min(cu.s, Math.max(0, cur.duration - 1));
+    if (want) bStart(rateK, cu.f, true);
+    emit();
+  }
+  D.loading = function () { return mode === 'wait' && want; };
   function ePlaying() { return mode === 'buf' ? bOn : mode === 'stream' && !!au && !au.paused && !au.ended; }
-  function ePos() { if (mode === 'buf') { bSync(); return bpos; } return mode === 'stream' && au ? au.currentTime || 0 : 0; }
+  function ePos() {
+    if (mode === 'buf') { bSync(); return bpos; }
+    if (mode === 'wait') return D.cue(D.track).s;
+    return mode === 'stream' && au ? au.currentTime || 0 : 0;
+  }
   function eDur() {
     if (mode === 'buf') return cur.duration;
     if (mode === 'stream' && au && au.duration > 0 && au.duration < 1e6) return au.duration;
@@ -385,11 +418,11 @@
   // Avance ou recule dans le morceau (0..1).
   D.seek = function (f) {
     var d = eDur();
-    if (!D.track || !(d > 0)) return;
+    if (!D.track || !(d > 0) || mode === 'wait') return;
     settle();
     var sec = Math.max(0, Math.min(0.999, f)) * d;
     // en lecture : fondu croisé de 0,4 s entre l'ancien et le nouvel endroit, sans à-coup
-    if (mode === 'buf') { var on = bOn; if (on) fadeOff(XFADE); else bStop(); bpos = sec; if (on) bStart(rateK, XFADE); }
+    if (mode === 'buf') { var on = bOn; if (on) fadeOff(XFADE); else bStop(); bpos = sec; if (on) bStart(rateK, XFADE, true); }
     else if (au) { try { au.currentTime = sec; } catch (e) {} }
     emit();
   };
@@ -487,15 +520,15 @@
         waveBusy = true;
         compute(t, function (out) {
           waveBusy = false;
-          if (!out) bad[t.id] = 1;
-          else if (D.track === t) { D.wave = out; adopt(); emit(); }
+          if (!out) { bad[t.id] = 1; if (D.track === t && mode === 'wait') { var w = want; D.play(t); if (!w) D.pause(); } }
+          else if (D.track === t) { D.wave = out; ready(); adopt(); emit(); }
           trim();
           pump();
         });
       });
     }, 300);
   }
-  D.pump = function () { adopt(); pump(); };
+  D.pump = function () { ready(); adopt(); pump(); };
   function showWave(t) {
     D.wave = null;
     B.db.get('kv', waveKey(t)).then(function (w) {
@@ -522,7 +555,10 @@
     if (bufs[t.id]) {
       // déjà décodé (c'était le « suivant ») : départ immédiat et exact
       mode = 'buf'; cur = bufs[t.id]; bpos = Math.min(cu.s, Math.max(0, cur.duration - 1));
-      if (xs) { bStart(0.07, Math.max(0.15, cu.f)); eRamp(rateK, xs * 0.6, emit); } else bStart(rateK, cu.f);
+      if (xs) { bStart(0.07, Math.max(0.15, cu.f)); eRamp(rateK, xs * 0.6, emit); } else bStart(rateK, cu.f, true);
+    } else if ((cu.s > 0 || cu.f > 0) && fits(t) && !bad[t.id]) {
+      // départ ou fondu réglé : le flux saute mal et rate le fondu, on attend donc le décodage
+      mode = 'wait'; cur = null;
     } else {
       mode = 'stream'; cur = null;
       ensureAu();
@@ -548,6 +584,7 @@
   D.toggle = function () {
     if (!D.track) { D.play(D.queue[0]); return; }
     A.resume(); A.unkill();
+    if (mode === 'wait') { want = !want; emit(); return; } // pas encore décodé : il partira (ou non) à l'arrivée
     var sec = cfg().brake;
     if (!ePlaying() || braked) { want = true; spin(true, sec * 0.6); }
     else { want = false; spin(false, sec); }

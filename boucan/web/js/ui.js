@@ -446,7 +446,7 @@
     setText(d.now, D.track ? D.track.t + (D.track.a ? ' — ' + D.track.a : '') : '');
     // temps écoulé / durée, à droite du titre
     var tm = D.track ? D.times() : null;
-    setText(d.time, tm && tm[1] > 0 ? clock(tm[0]) + ' / ' + clock(tm[1]) : '');
+    setText(d.time, D.loading() ? '\u2026' : tm && tm[1] > 0 ? clock(tm[0]) + ' / ' + clock(tm[1]) : '');
     setHtml(d.play, D.wanted() ? SVG_PAUSE : SVG_PLAY);
     var vw = (B.cfg.deck.vol * 100) + '%';
     if (d.shownVol !== vw) { d.shownVol = vw; d.fill.style.width = vw; }
@@ -523,8 +523,8 @@
     var row = add(h('div', 'row'), zero, play);
     row.style.marginTop = '8px';
     sec(body, t('cueSec'), c, lbl, row, h('div', 'note', t('cueNote')));
-    sec(body, t('fadeIn'), rangeS(function () { return cu.f / 5; }, function (v) { cu.f = Math.round(v * 50) / 10; store(); },
-      function () { return cu.f ? cu.f.toFixed(1) + ' s' : t('none'); }));
+    sec(body, t('fadeIn'), rangeS(function () { return Math.min(1, cu.f); }, function (v) { cu.f = Math.round(v * 20) / 20; store(); },
+      function () { return cu.f ? cu.f.toFixed(2) + ' s' : t('none'); }));
     setTimeout(draw, 0);
     D.waveOf(track).then(function (w) { if (w && w.length) { wave = w; draw(); } })['catch'](function () {});
   }
@@ -549,6 +549,9 @@
       function set(c) { if (c) B.cfg.deck.colors[key] = c; else delete B.cfg.deck.colors[key]; refresh(); sh.close(); }
       on(none, 'click', function () { set(''); });
       sec(body, t('color'), swatches(B.cfg.deck.colors[key] || '', set), none);
+      var hideB = h('button', 'btn danger', t('trackHide'));
+      on(hideB, 'click', function () { B.deck.hide(track, true); sh.close(); toast(t('trackHidden'), 3000); });
+      sec(body, t('trackHideSec'), hideB, h('div', 'note', t('trackHideNote')));
     }, refresh);
   }
   // Recherche d'un titre dans le dossier source.
@@ -598,6 +601,16 @@
       function item(key, label, n) { add(s, lstBtn(label, n, B.cfg.deck.sub === key, function () { D.setSub(key); sh.close(); })); }
       item('', t('dkAll'), D.count());
       D.subs().forEach(function (x) { item(x.key, x.key === '.' ? t('dkHere') : D.leaf(x.key), x.n); });
+      // morceaux retirés : un toucher les rétablit
+      var gone = D.hiddenList();
+      if (gone.length) {
+        var hs = sec(body, t('trackGone', gone.length), h('div', 'note', t('trackGoneNote')));
+        gone.forEach(function (tr) {
+          var b = h('button', 'btn gap lst', tr.t + (tr.a ? '  ·  ' + tr.a : ''));
+          on(b, 'click', function () { D.hide(tr, false); b.style.display = 'none'; toast(t('trackBack'), 2000); });
+          add(hs, b);
+        });
+      }
     }, deckPaintAll);
   }
   function rootLabel(path) {
@@ -1470,10 +1483,6 @@
         sec(body, 'HUB', del);
         return;
       }
-      big('hub', t('newHub'), t('noteHub'), function () {
-        pg.pads[i] = { id: B.uid('p'), type: 'hub', name: '', color: '#000000', subs: [null, null, null, null] };
-        B.saveNow(); sh.close(); renderAll();
-      });
       // un widget prend toute la largeur : on cherche des rangées libres à partir de la case touchée
       function widget(type, name, color) {
         var rows = B.ROWS[type], a, at = -1;
@@ -1485,6 +1494,10 @@
       }
       big('deck', t('newDeck'), t('noteDeck'), function () { widget('deck', t('typeDeck'), '#37474F'); });
       big('player', 'PHONE CONTROL', t('notePlayer'), function () { widget('player', 'PHONE CONTROL', '#2E7D32'); });
+      big('hub', t('newHub'), t('noteHub'), function () {
+        pg.pads[i] = { id: B.uid('p'), type: 'hub', name: '', color: '#000000', subs: [null, null, null, null] };
+        B.saveNow(); sh.close(); renderAll();
+      });
     });
   }
 
@@ -2000,6 +2013,52 @@
     });
   }
 
+  // Petite feuille pour saisir un nom.
+  function askName(title, value, cb) {
+    var name = value;
+    sheet(title, function (body) {
+      var f = field(value, 16, function (v) { name = v; });
+      sec(body, t('name'), f);
+      setTimeout(function () { try { f.focus(); } catch (e) {} }, 150);
+    }, function () { if (name) cb(name); });
+  }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  // Remplace toutes les pages (chargement d'un set, set vide).
+  function swapPages(pages) {
+    A.stopAll();
+    B.cfg.pages = pages;
+    B.cfg.cur = 0;
+    S.moving = null;
+    return B.saveNow().then(B.gc).then(function () { closeSheets(); renderAll(); return loadBuffers(); });
+  }
+  // Sets de pages : toutes les pages d'un coup, à enregistrer et à recharger.
+  function setsSection(body, refresh) {
+    var box = h('div');
+    function b(label, cls, fn) { var e = h('button', 'btn gap' + (cls ? ' ' + cls : ''), label); on(e, 'click', fn); return e; }
+    B.cfg.sets.forEach(function (st, k) {
+      add(box, b(st.name + '  (' + st.pages.length + ' ' + t('setPages') + ')', 'lst', function () {
+        sheet(st.name, function (bd, sh) {
+          sec(bd, '', b(t('setLoad'), 'accent', function () {
+            ask(t('askSetLoad', st.name), t('setLoad'), function () { swapPages(clone(st.pages)); });
+          }), b(t('setOver'), '', function () {
+            ask(t('askSetOver', st.name), t('setOver'), function () { st.pages = clone(B.cfg.pages); B.saveNow(); sh.close(); refresh(); toast(t('setSaved')); });
+          }), b(t('setDel'), 'danger', function () {
+            ask(t('askSetDel', st.name), t('doDel'), function () { B.cfg.sets.splice(k, 1); B.saveNow().then(B.gc); sh.close(); refresh(); });
+          }), h('div', 'note', t('setNote')));
+        });
+      }));
+    });
+    sec(body, t('sets'), b(t('setSave'), '', function () {
+      if (B.cfg.sets.length >= B.MAX_SETS) { toast(t('setMax')); return; }
+      askName(t('setSave'), 'SET ' + (B.cfg.sets.length + 1), function (name) {
+        B.cfg.sets.push({ name: name, pages: clone(B.cfg.pages) });
+        B.saveNow(); refresh(); toast(t('setSaved'));
+      });
+    }), b(t('setNew'), '', function () {
+      ask(t('askSetNew'), t('setNew'), function () { swapPages([B.newPage(1)]); });
+    }), box, h('div', 'note', t('setsNote')));
+  }
+
   function openMenu() {
     sheet('BOUCAN', function (body, sh) {
       function btn(label, cls, fn) { var b = h('button', 'btn gap' + (cls ? ' ' + cls : ''), label); on(b, 'click', fn); return b; }
@@ -2021,6 +2080,8 @@
           btn(t('importCfg'), '', doImport),
           h('div', 'note', t('transferNote')));
       }
+
+      setsSection(body, function () { sh.close(); openMenu(); });
 
       sec(body, t('fxTarget'), targetChoice(), h('div', 'note', t('fxTargetNote')));
 

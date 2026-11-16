@@ -145,7 +145,8 @@ body.editing .mini .padIn { outline-width: 2px; outline-offset: -4px; }
 .fxSet .secLbl { margin-top: 10px; }
 .btn.lst { text-align: left; padding-left: 14px; }
 .btn.tdeck { background: #37474F; }
-.btn.thub { background: #546E7A; }
+/* le hub n'est pas un contenu comme les autres : bouton en pointillés */
+.btn.thub { background: transparent; border: 3px dashed #888; }
 
 /* ---------- Enregistrement ---------- */
 #rec { display: none; position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, .9); z-index: 25; pointer-events: none; }
