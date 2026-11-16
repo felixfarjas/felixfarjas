@@ -76,6 +76,23 @@ body.editing .tag { bottom: 13px; }
 .padIco { position: absolute; left: 0; right: 0; top: 9px; height: 30px; line-height: 30px; font-size: 13px; letter-spacing: 2px; text-align: center; opacity: .9; }
 .padIn.mic { border-radius: 26px; }
 .padIn.fx { border-radius: 46px; }
+/* clip MIDI : coins coupés, trame de points ; en attente de son tour, il clignote */
+.padIn.midi { border-radius: 4px 22px 4px 22px; background-image: radial-gradient(rgba(0, 0, 0, .22) 1.5px, rgba(0, 0, 0, 0) 2px); background-size: 9px 9px; }
+.padIn.midi.queued { -webkit-animation: wait .5s ease-in-out infinite alternate; animation: wait .5s ease-in-out infinite alternate; }
+@-webkit-keyframes wait { from { opacity: 1; } to { opacity: .45; } }
+@keyframes wait { from { opacity: 1; } to { opacity: .45; } }
+.btn.tmidi { background: #00897B; }
+.btn.tkeys { background: #263238; }
+/* séquenceur */
+canvas.seq { display: block; width: 100%; border-radius: 8px; touch-action: none; }
+.kgrid { display: flex; flex-wrap: wrap; margin: -3px; }
+.kgrid > div { width: 16.666%; padding: 3px; }
+.kgrid .btn { padding: 6px 0; }
+/* clavier (widget d'une rangée) : huit touches dans la gamme */
+.kbd { position: absolute; left: 6px; top: 6px; right: 6px; bottom: 6px; display: flex; touch-action: none; }
+.key { flex: 1; margin: 0 2px; border-radius: 6px 6px 10px 10px; background: #ECEFF1; color: #263238; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px; font-size: 13px; }
+.key.root { background: #FDD835; }
+.key.down { background: #fff; -webkit-transform: translateY(3px); transform: translateY(3px); box-shadow: inset 0 0 0 4px #E53935; }
 /* hub : quatre petits boutons dans une case */
 .padIn.hubIn { background: transparent; overflow: visible; }
 body.editing .padIn.hubIn { outline: none; }

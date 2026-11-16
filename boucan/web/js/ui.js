@@ -85,7 +85,7 @@
   function buildGrid() {
     for (var i = 0; i < B.SLOTS; i++) {
       var p = viewDom(), k;
-      p.el = h('div', 'pad'); p.pl = playerDom(); p.dk = deckDom(); p.hub = { el: h('div', 'hub'), v: [] };
+      p.el = h('div', 'pad'); p.pl = playerDom(); p.dk = deckDom(); p.kb = B.midiUI.keysDom(); p.hub = { el: h('div', 'hub'), v: [] };
       for (k = 0; k < 4; k++) {
         var m = viewDom(), box = h('div', 'mini');
         box.style.left = (k % 2 * 50) + '%';
@@ -97,7 +97,7 @@
       p.el.style.left = (i % 2 * 50) + '%';
       p.el.style.top = (Math.floor(i / 2) * 25) + '%';
       p.el.setAttribute('data-i', i);
-      add(el.grid, add(p.el, add(p.inn, p.pl.el, p.dk.el, p.hub.el)));
+      add(el.grid, add(p.el, add(p.inn, p.pl.el, p.dk.el, p.kb.el, p.hub.el)));
       pads.push(p);
     }
   }
@@ -138,13 +138,15 @@
       setProg(p, null);
       return;
     }
-    var type = pad.type || 'sample', mic = type === 'mic', fx = type === 'fx';
-    var v = A.voices[pad.id], lit = fx ? !!A.fxPads[pad.id] : !!v;
+    var type = pad.type || 'sample', mic = type === 'mic', fx = type === 'fx', midi = type === 'midi';
+    var mst = midi ? B.midi.state(pad) : '';
+    var v = midi ? B.midi.info(pad) : A.voices[pad.id], lit = fx ? !!A.fxPads[pad.id] : !!v;
     var fg = mic ? pad.color : ink(pad.color), nm = pad.name || '', longest = 0;
     nm.split(/\s+/).forEach(function (w) { if (w.length > longest) longest = w.length; });
     if (type === 'sample' && !A.buffers[pad.sample]) cls += ' loading';
     if (mic) cls += ' mic';
     if (fx) cls += ' fx' + (lit ? ' lit' : '');
+    if (midi) cls += ' midi' + (mst === 'queued' ? ' queued' : '');
     if (down) cls += ' down';
     if (S.moving && S.moving.pad === pad) cls += ' src';
     p.inn.className = cls;
@@ -155,9 +157,11 @@
     st.boxShadow = lit ? 'inset 0 0 0 6px ' + fg : '';
     p.ico.innerHTML = mic ? MIC_SVG : '';
     if (fx) p.ico.textContent = 'FX';
+    if (midi) p.ico.textContent = 'MIDI';
     p.name.className = 'name' + (longest > 11 || nm.length > 22 ? ' s3' : longest > 8 || nm.length > 14 ? ' s2' : '');
     p.name.textContent = nm;
-    p.tag.textContent = mic ? t(pad.micMode === 'live' ? 'micLive' : 'micAfter') : t('mode.' + pad.mode) + (pad.loop ? ' · ' + t('loop') : '');
+    p.tag.textContent = midi ? pad.bars + ' ' + t(pad.bars > 1 ? 'mdBarsN' : 'mdBar1') + (mst === 'queued' ? ' · ' + t('mdWait') : '') :
+      mic ? t(pad.micMode === 'live' ? 'micLive' : 'micAfter') : t('mode.' + pad.mode) + (pad.loop ? ' · ' + t('loop') : '');
     setProg(p, v);
   }
 
@@ -169,6 +173,7 @@
     p.el.style.height = ((wide || 1) * 25) + '%';
     p.pl.el.style.display = wide && pad.type === 'player' ? '' : 'none';
     p.dk.el.style.display = wide && pad.type === 'deck' ? '' : 'none';
+    p.kb.el.style.display = wide && pad.type === 'keys' ? '' : 'none';
     p.hub.el.style.display = hub ? '' : 'none';
     if (covered) return;
     if (wide || hub) {
@@ -179,6 +184,7 @@
       setProg(p, null);
       if (hub) for (k = 0; k < 4; k++) paint(p.hub.v[k], pad.subs[k], isHeld(i, k), true);
       else if (pad.type === 'player') playerPaint(p.pl);
+      else if (pad.type === 'keys') B.midiUI.keysPaint(p.kb, pad);
       else { p.dk.fg = ink(pad.color); deckPaint(p.dk); }
       return;
     }
@@ -195,7 +201,7 @@
   function renderTabs() {
     var live = {}, n = B.cfg.pages.length, want = n + (S.edit && n < B.MAX_PAGES ? 1 : 0), k;
     var music = B.deck.playing();
-    B.eachPad(function (p, pi) { if (A.voices[p.id] || A.fxPads[p.id] || (music && p.type === 'deck')) live[pi] = 1; });
+    B.eachPad(function (p, pi) { if (A.voices[p.id] || A.fxPads[p.id] || (music && p.type === 'deck') || (p.type === 'midi' && B.midi.state(p))) live[pi] = 1; });
     if (tabEls.length !== want) {
       el.tabs.innerHTML = ''; tabEls = [];
       for (k = 0; k < want; k++) {
@@ -775,7 +781,7 @@
   // Case FX « réglable en glissant » : doigt tenu, monter ou descendre change
   // la valeur. L'écran s'assombrit, un camembert et le contour montrent le dosage.
   function adjShow(hd) {
-    var pad = hd.pad, v = padP1(pad), r = hd.view.inn.getBoundingClientRect(), size = 190, st = el.adjBox.style;
+    var pad = hd.pad, a = hd.adj, v = a.get(), r = hd.view.inn.getBoundingClientRect(), size = 190, st = el.adjBox.style;
     st.left = Math.max(8, Math.min(window.innerWidth - size - 8, r.left + r.width / 2 - size / 2)) + 'px';
     st.top = Math.max(8, Math.min(window.innerHeight - size - 8, r.top + r.height / 2 - size / 2)) + 'px';
     st.borderColor = pad.color;
@@ -787,8 +793,8 @@
     g.beginPath(); g.moveTo(n / 2, n / 2); g.arc(n / 2, n / 2, n / 2 - 3 * dpr, a0, a0 + Math.PI * 2 * Math.max(0.001, v)); g.closePath(); g.fill();
     g.strokeStyle = '#fff'; g.lineWidth = 2 * dpr;
     g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 3 * dpr, 0, Math.PI * 2); g.stroke();
-    el.adjTxt.textContent = parLabel(pad, B.PAD_FX_PAR[pad.fx][0]);
-    el.adjName.textContent = pad.name || t('pfx.' + pad.fx);
+    el.adjTxt.textContent = a.label();
+    el.adjName.textContent = a.name;
     el.adj.className = 'on';
   }
   function adjHide() { el.adj.className = ''; }
@@ -798,10 +804,9 @@
       if (Math.abs(y - a.y) < 14) return false;
       a.on = true; a.y = y;
       buzz();
-      if (!A.fxPads[pad.id]) A.padFx(pad, true);
+      if (a.begin) a.begin();
     }
-    pad.p1 = Math.round(Math.max(0, Math.min(1, a.p0 - (y - a.y) / 170)) * 100) / 100;
-    A.padFxUpdate(pad);
+    a.set(Math.round(Math.max(0, Math.min(1, a.p0 - (y - a.y) / 170)) * 100) / 100);
     adjShow(hd);
     return true;
   }
@@ -825,7 +830,17 @@
     if (type === 'fx') {
       hd.was = !!A.fxPads[pad.id];
       A.padFx(pad, pad.mode === 'toggle' ? !hd.was : true);
-      if (pad.live && typeof y === 'number') hd.adj = { y: y, p0: padP1(pad), on: false };
+      if (pad.live && typeof y === 'number') hd.adj = { y: y, p0: padP1(pad), on: false, name: pad.name || t('pfx.' + pad.fx),
+        get: function () { return padP1(pad); }, label: function () { return parLabel(pad, B.PAD_FX_PAR[pad.fx][0]); },
+        begin: function () { if (!A.fxPads[pad.id]) A.padFx(pad, true); },
+        set: function (x) { pad.p1 = x; A.padFxUpdate(pad); } };
+    }
+    else if (type === 'midi') {
+      // clip MIDI : il se lance au lâcher (un simple toucher) ; glisser règle une de ses macros
+      var mv = pad.voices[pad.lv] || pad.voices[0], mk = B.midi.INST[mv.inst].macros[pad.lk] || B.midi.INST[mv.inst].macros[0];
+      if (typeof y === 'number') hd.adj = { y: y, p0: mv.m[pad.lk] || 0, on: false, name: (pad.name || 'MIDI') + ' · ' + t('mm.' + mk),
+        get: function () { return mv.m[pad.lk] || 0; }, label: function () { return Math.round((mv.m[pad.lk] || 0) * 100) + ' %'; },
+        set: function (x) { mv.m[pad.lk] = x; } };
     }
     else if (type === 'mic') recHold(pad, i, key);
     else if (pad.mode === 'toggle' && A.voices[pad.id]) { hd.was = A.pos(A.voices[pad.id]); A.stop(pad.id); }
@@ -839,6 +854,7 @@
     adjEnd(hd);
     var type = hd.pad.type || 'sample';
     if (type === 'fx') { if (hd.pad.mode !== 'toggle') A.padFx(hd.pad, false); }
+    else if (type === 'midi') { if (!hd.adj || !hd.adj.on) B.midi.toggle(hd.pad, hd.pg); }
     else if (type === 'mic') { if (rec && rec.key === key) recEnd(false); }
     else if (hd.pad.mode === 'gate') A.stop(hd.pad.id);
     if (hd.pg === B.cfg.cur) renderPad(hd.i);
@@ -851,6 +867,7 @@
     adjEnd(hd);
     var pad = hd.pad, type = pad.type || 'sample';
     if (type === 'fx') A.padFx(pad, !!hd.was && pad.mode === 'toggle');
+    else if (type === 'midi') { /* rien n'a encore été lancé */ }
     else if (type === 'mic') { if (rec && rec.key === key) recEnd(true); }
     else if (typeof hd.was === 'number') A.play(pad, hd.was);
     else A.stop(pad.id, false, true);
@@ -964,7 +981,7 @@
       A.resume();
       if (sw && sw.on) { ev.preventDefault(); return; }
       var list = inCls(ev.target, 'dkList'), first = ev.changedTouches[0];
-      var own = inCls(ev.target, 'dkVol') || inCls(ev.target, 'dkWave'); // zones qui ont leur propre geste horizontal
+      var own = inCls(ev.target, 'dkVol') || inCls(ev.target, 'dkWave') || inCls(ev.target, 'kbd'); // zones qui ont leur propre geste horizontal
       // ajout rapide : une case vide touchée (sans glisser) ouvre le choix de son contenu
       var qi = padIndex(first.target);
       var qc = qi >= 0 ? page().pads[qi] : null, qs = qc && qc.type === 'hub' ? subIndex(first.target) : -1;
@@ -1470,6 +1487,10 @@
       big('sample', t('newRec'), t('noteRec'), function () { make('sample', null, 'REC'); open({ rec: true }); });
       if (!sub) big('mic', t('newMic'), t('noteMic'), function () { make('mic'); open(); });
       big('fx', t('newFx'), t('noteFx'), function () { make('fx'); open(); });
+      if (!sub) big('midi', t('newMidi'), t('noteMidi'), function () {
+        refSet(ref, B.midi.newClip(B.uid('p'), B.COLORS[(i + 4) % B.COLORS.length]));
+        B.saveNow(); open();
+      });
       if (sub) {
         var del = h('button', 'btn danger', t('hubDel'));
         on(del, 'click', function () {
@@ -1484,16 +1505,18 @@
         return;
       }
       // un widget prend toute la largeur : on cherche des rangées libres à partir de la case touchée
-      function widget(type, name, color) {
+      function widget(type, name, color, extra) {
         var rows = B.ROWS[type], a, at = -1;
         function free(x) { for (var k = x; k < x + 2 * rows; k++) if (pg.pads[k] || B.cover(pg, k) >= 0) return false; return true; }
         for (a = Math.min(B.SLOTS - 2 * rows, i - i % 2); a >= 0 && at < 0; a -= 2) if (free(a)) at = a;
         if (at < 0) { toast(t('plRoom', rows * 2), 3500); return; }
         pg.pads[at] = { id: B.uid('p'), type: type, name: name, color: color };
+        for (var xk in extra || {}) pg.pads[at][xk] = extra[xk];
         B.saveNow(); sh.close(); renderAll(); playerPoll();
       }
       big('deck', t('newDeck'), t('noteDeck'), function () { widget('deck', t('typeDeck'), '#37474F'); });
       big('player', 'PHONE CONTROL', t('notePlayer'), function () { widget('player', 'PHONE CONTROL', '#2E7D32'); });
+      big('keys', t('typeKeys'), t('noteKeys'), function () { widget('keys', t('typeKeys'), '#263238', B.midiUI.newKeys()); });
       big('hub', t('newHub'), t('noteHub'), function () {
         pg.pads[i] = { id: B.uid('p'), type: 'hub', name: '', color: '#000000', subs: [null, null, null, null] };
         B.saveNow(); sh.close(); renderAll();
@@ -1635,6 +1658,8 @@
   function editPad(ref, opt) {
     var pi = ref.pi, i = ref.i, pad = refGet(ref);
     if (!pad) return;
+    if (pad.type === 'midi') { B.midiUI.edit(ref); return; }
+    if (pad.type === 'keys') { B.midiUI.editKeys(ref); return; }
     if (B.ROWS[pad.type]) { editWidget(pi, i); return; }
     var type = pad.type || 'sample';
     var pausedAt = null, raf = null, wave = null, playLbl, playIco, times = function () {};
@@ -1922,7 +1947,7 @@
       on(del, 'click', function () {
         if (B.cfg.pages.length < 2) { toast(t('keepOne')); return; }
         ask(t('askDelPage', pg.name), t('doDel'), function () {
-          pg.pads.forEach(function (p) { if (p) { A.stop(p.id, false, true); A.padFx(p, false); } });
+          pg.pads.forEach(function (p) { if (p) { A.stop(p.id, false, true); A.padFx(p, false); if (p.type === 'midi') B.midi.stop(p); } });
           B.cfg.pages.splice(B.cfg.pages.indexOf(pg), 1);
           B.cfg.cur = Math.min(B.cfg.cur, B.cfg.pages.length - 1);
           sh.close();
@@ -2081,6 +2106,11 @@
           h('div', 'note', t('transferNote')));
       }
 
+      var mdB = btn('', '', function () { B.midiUI.openSettings(mdLbl); });
+      function mdLbl() { mdB.textContent = B.cfg.midi.bpm + ' BPM  ·  ' + B.midi.KEYS[B.cfg.midi.root] + ' ' + t('sc.' + B.cfg.midi.scale); }
+      mdLbl();
+      sec(body, t('mdSet'), mdB, h('div', 'note', t('mdSetNote')));
+
       setsSection(body, function () { sh.close(); openMenu(); });
 
       sec(body, t('fxTarget'), targetChoice(), h('div', 'note', t('fxTargetNote')));
@@ -2189,6 +2219,10 @@
       fatal(t('bootFail') + (e && e.message || e));
     });
   }
+
+  // Boîte à outils pour les modules d'interface chargés après celui-ci (midiui.js).
+  B.ui = { h: h, add: add, on: on, sheet: sheet, sec: sec, choice: choice, check: check, rangeS: rangeS, swatches: swatches, field: field,
+    toast: toast, ask: ask, buzz: buzz, ink: ink, refGet: refGet, refSet: refSet, renderAll: renderAll, state: S };
 
   if (document.readyState === 'loading') on(document, 'DOMContentLoaded', boot); else boot();
 })(window.Boucan);

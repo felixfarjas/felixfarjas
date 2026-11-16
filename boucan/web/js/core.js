@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.5';
+  B.VERSION = '2.6';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.MAX_SETS = 12;
@@ -55,7 +55,7 @@
   B.DUCKS = ['none', 'duck', 'pause'];
   // Cases larges (toute la largeur) et leur hauteur en rangées : le widget
   // Spotify et le lecteur de fichiers.
-  B.ROWS = { player: 1, deck: 3 };
+  B.ROWS = { player: 1, deck: 3, keys: 1 };
   // Renvoie la case d'ancrage du widget qui recouvre la case i, ou -1.
   B.cover = function (pg, i) {
     for (var a = 0; a < i; a += 2) {
@@ -631,6 +631,7 @@
     if (A.braked) brake(false);
     if (fxIds.length) { applyFx(0.03); fxIds.forEach(function (id) { if (A.onChange) A.onChange(id); }); }
     if (B.mic && B.mic.on) B.mic.stop(true);
+    if (B.midi) B.midi.stopAll();
     // réglage du menu : STOP peut laisser tourner la musique du lecteur
     if (B.deck && B.deck.playing() && B.cfg && B.cfg.stopMusic === false) {
       // la musique passe par la même sortie : on ne la coupe pas, on éteint juste la queue d'écho
@@ -728,7 +729,7 @@
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {}, cues: {}, hidden: {} }, sets: [],
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, midi: { bpm: 120, root: 9, scale: 'minor', swing: 0 }, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {}, cues: {}, hidden: {} }, sets: [],
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -741,6 +742,11 @@
       });
       cfg.pages.push(page);
     });
+    // page MIDI : quatre clips de démonstration et le clavier
+    var mp = { name: 'MIDI', color: '#00897B', pads: blankPads() };
+    B.midi.demo(B.uid).forEach(function (c, k) { mp.pads[k] = c; });
+    mp.pads[6] = { id: B.uid('p'), type: 'keys', name: 'CLAVIER', color: '#263238', inst: 'pluck', vol: 0.8, oct: 0, m: B.midi.INST.pluck.def.slice() };
+    cfg.pages.push(mp);
     return new Promise(function (res, rej) {
       (function next() {
         if (i >= jobs.length) { res(cfg); return; }
@@ -777,6 +783,35 @@
       } else if (B.ROWS[p.type]) {
         if (sub || i % 2 || i + 2 * B.ROWS[p.type] > B.SLOTS) return null;
         base.type = p.type;
+        if (p.type === 'keys') {
+          var KI = B.midi.INST[p.inst] && B.midi.INST[p.inst].kind === 'synth' ? p.inst : 'pluck';
+          base.inst = KI; base.vol = num(p.vol, 0.8, 0, 1); base.oct = Math.round(num(p.oct, 0, -1, 1));
+          base.m = [0, 1, 2, 3].map(function (k) { return num(p.m && p.m[k], B.midi.INST[KI].def[k], 0, 1); });
+        }
+      } else if (p.type === 'midi') {
+        // clip MIDI : jusqu'à 4 voix, chacune avec son instrument, ses 4 macros et ses notes [pas, ligne, longueur]
+        if (sub) return null;
+        base.type = 'midi';
+        base.bars = p.bars === 1 || p.bars === 4 ? p.bars : 2;
+        base.steps = p.steps === 8 ? 8 : 16;
+        base.prog = [0, 1, 2, 3].map(function (k) { return Math.floor(num(p.prog && p.prog[k], 0, 0, 6)); });
+        var total = base.bars * base.steps;
+        base.voices = [];
+        (p.voices instanceof Array ? p.voices : []).slice(0, B.midi.MAX_VOICES).forEach(function (v) {
+          var I = v && B.midi.INST[v.inst];
+          if (!I) return;
+          var notes = [];
+          (v.n instanceof Array ? v.n : []).slice(0, 800).forEach(function (nt) {
+            if (!(nt instanceof Array)) return;
+            var s0 = Math.floor(num(nt[0], -1, -1, 1e4)), d0 = Math.floor(num(nt[1], 0, 0, 40));
+            if (s0 >= 0 && s0 < total) notes.push([s0, d0, Math.max(1, Math.min(total - s0, Math.floor(num(nt[2], 1, 1, 64))))]);
+          });
+          base.voices.push({ inst: v.inst, vol: num(v.vol, 0.8, 0, 1), oct: Math.round(num(v.oct, 0, -1, 1)), mute: !!v.mute,
+            m: [0, 1, 2, 3].map(function (k) { return num(v.m && v.m[k], I.def[k], 0, 1); }), n: notes });
+        });
+        if (!base.voices.length) return null;
+        base.lv = Math.floor(num(p.lv, 0, 0, base.voices.length - 1));
+        base.lk = Math.floor(num(p.lk, 0, 0, 3));
       } else if (p.type === 'mic') {
         if (sub) return null;
         base.type = 'mic';
@@ -836,6 +871,10 @@
     var cus = dk.cues && typeof dk.cues === 'object' ? dk.cues : {}, cn = 0, cuk;
     for (cuk in cus) if (cn < 3000 && cus[cuk] && typeof cus[cuk] === 'object') { cfg.deck.cues[cuk] = { s: num(cus[cuk].s, 0, 0, 36000), f: num(cus[cuk].f, 0, 0, 1) }; cn++; }
     cfg.stopMusic = raw.stopMusic !== false;
+    // clips MIDI : tempo, tonalité, gamme et swing communs
+    var md = raw.midi && typeof raw.midi === 'object' ? raw.midi : {};
+    cfg.midi = { bpm: Math.round(num(md.bpm, 120, 60, 200)), root: Math.floor(num(md.root, 9, 0, 11)),
+      scale: B.midi.SCALES[md.scale] ? md.scale : 'minor', swing: num(md.swing, 0, 0, 0.6) };
     cfg.quickAdd = raw.quickAdd === true;
     // commentaires des morceaux (par nom de fichier)
     var nts = dk.notes && typeof dk.notes === 'object' ? dk.notes : {}, nn = 0, nk;

@@ -454,6 +454,9 @@
   var RED = '#E53935', ORANGE = '#FB8C00', YELLOW = '#FDD835', GREEN = '#43A047', CYAN = '#00ACC1',
     BLUE = '#1E88E5', VIOLET = '#8E24AA', PINK = '#EC407A', GREY = '#546E7A';
 
+  // Briques de synthèse, réutilisées par les batteries des clips MIDI.
+  B.dsp = { SR: SR, buf: buf, rng: rng, tone: tone, noise: noise };
+
   // Les 16 sons d'origine. name : [français, anglais].
   B.FACTORY = {
     airhorn: { name: ['AIR HORN', 'AIR HORN'], color: RED, mode: 'oneshot', make: airhorn },
