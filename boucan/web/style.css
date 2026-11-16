@@ -84,7 +84,14 @@ body.editing .tag { bottom: 13px; }
 .btn.tmidi { background: #00897B; }
 .btn.tkeys { background: #263238; }
 /* séquenceur */
-canvas.seq { display: block; width: 100%; border-radius: 8px; touch-action: none; }
+canvas.seq { display: block; width: 100%; border-radius: 8px; touch-action: pan-y; }
+.btn.mdPlay { min-height: 72px; font-size: 22px; letter-spacing: 1px; background: #43A047; color: #fff; }
+.btn.mdPlay.on { background: #E53935; color: #fff; }
+.mdIco { display: inline-block; vertical-align: middle; margin-right: 12px; line-height: 0; }
+.mdPlay span { vertical-align: middle; }
+.row > .mute { flex: none; width: 96px; }
+.btn.mute.on { background: #E53935; color: #fff; }
+.btn.muted { text-decoration: line-through; opacity: .55; }
 .kgrid { display: flex; flex-wrap: wrap; margin: -3px; }
 .kgrid > div { width: 16.666%; padding: 3px; }
 .kgrid .btn { padding: 6px 0; }

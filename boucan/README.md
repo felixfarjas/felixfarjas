@@ -26,7 +26,7 @@ Soundboard Android ultra simple, pensé pour être joué d'une main, à vélo, e
 
 ## Installer
 
-Télécharger `dist/Boucan-2.6.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
+Télécharger `dist/Boucan-2.7.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
 depuis cette source quand Android le demande.
 
 ## Organisation

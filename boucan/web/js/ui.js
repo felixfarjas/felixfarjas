@@ -806,7 +806,8 @@
       buzz();
       if (a.begin) a.begin();
     }
-    a.set(Math.round(Math.max(0, Math.min(1, a.p0 - (y - a.y) / 170)) * 100) / 100);
+    if (a.delta) a.delta(-(y - a.y) / 170); // plusieurs réglages bougent ensemble, chacun depuis sa valeur
+    else a.set(Math.round(Math.max(0, Math.min(1, a.p0 - (y - a.y) / 170)) * 100) / 100);
     adjShow(hd);
     return true;
   }
@@ -836,11 +837,21 @@
         set: function (x) { pad.p1 = x; A.padFxUpdate(pad); } };
     }
     else if (type === 'midi') {
-      // clip MIDI : il se lance au lâcher (un simple toucher) ; glisser règle une de ses macros
-      var mv = pad.voices[pad.lv] || pad.voices[0], mk = B.midi.INST[mv.inst].macros[pad.lk] || B.midi.INST[mv.inst].macros[0];
-      if (typeof y === 'number') hd.adj = { y: y, p0: mv.m[pad.lk] || 0, on: false, name: (pad.name || 'MIDI') + ' · ' + t('mm.' + mk),
-        get: function () { return mv.m[pad.lk] || 0; }, label: function () { return Math.round((mv.m[pad.lk] || 0) * 100) + ' %'; },
-        set: function (x) { mv.m[pad.lk] = x; } };
+      // clip MIDI : il se lance au lâcher (un simple toucher) ; glisser règle les réglages choisis dans l'éditeur
+      var tg = (pad.live || []).filter(function (l) { return !!pad.voices[l[0]]; }).map(function (l) {
+        var mv = pad.voices[l[0]];
+        return { v: mv, k: l[1], s: l[1] === 4 ? mv.oct || 0 : mv.m[l[1]], key: l[1] === 4 ? 'mdOct' : 'mm.' + B.midi.INST[mv.inst].macros[l[1]] };
+      });
+      if (tg.length && typeof y === 'number') hd.adj = { y: y, on: false,
+        name: (pad.name || 'MIDI') + ' · ' + (tg.length > 1 ? tg.length + ' ' + t('mdParams') : t(tg[0].key)),
+        get: function () { return tg[0].k === 4 ? ((tg[0].v.oct || 0) + 1) / 2 : tg[0].v.m[tg[0].k]; },
+        label: function () { return tg[0].k === 4 ? ((tg[0].v.oct || 0) > 0 ? '+' : '') + (tg[0].v.oct || 0) : Math.round(tg[0].v.m[tg[0].k] * 100) + ' %'; },
+        delta: function (d) {
+          tg.forEach(function (x) {
+            if (x.k === 4) x.v.oct = Math.max(-1, Math.min(1, x.s + Math.round(d * 2.5)));
+            else x.v.m[x.k] = Math.round(Math.max(0, Math.min(1, x.s + d)) * 100) / 100;
+          });
+        } };
     }
     else if (type === 'mic') recHold(pad, i, key);
     else if (pad.mode === 'toggle' && A.voices[pad.id]) { hd.was = A.pos(A.voices[pad.id]); A.stop(pad.id); }
@@ -2223,6 +2234,7 @@
   // Boîte à outils pour les modules d'interface chargés après celui-ci (midiui.js).
   B.ui = { h: h, add: add, on: on, sheet: sheet, sec: sec, choice: choice, check: check, rangeS: rangeS, swatches: swatches, field: field,
     toast: toast, ask: ask, buzz: buzz, ink: ink, refGet: refGet, refSet: refSet, renderAll: renderAll, state: S };
+  B.ui.playSvg = SVG_PLAY; B.ui.pauseSvg = SVG_PAUSE;
 
   if (document.readyState === 'loading') on(document, 'DOMContentLoaded', boot); else boot();
 })(window.Boucan);

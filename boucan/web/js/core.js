@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.6';
+  B.VERSION = '2.7';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.MAX_SETS = 12;
@@ -745,7 +745,7 @@
     // page MIDI : quatre clips de démonstration et le clavier
     var mp = { name: 'MIDI', color: '#00897B', pads: blankPads() };
     B.midi.demo(B.uid).forEach(function (c, k) { mp.pads[k] = c; });
-    mp.pads[6] = { id: B.uid('p'), type: 'keys', name: 'CLAVIER', color: '#263238', inst: 'pluck', vol: 0.8, oct: 0, m: B.midi.INST.pluck.def.slice() };
+    mp.pads[6] = { id: B.uid('p'), type: 'keys', name: 'CLAVIER', color: '#263238', inst: 'pluck', vol: 0.8, oct: 0, m: B.midi.INST.pluck.def.slice(), live: [0] };
     cfg.pages.push(mp);
     return new Promise(function (res, rej) {
       (function next() {
@@ -787,6 +787,7 @@
           var KI = B.midi.INST[p.inst] && B.midi.INST[p.inst].kind === 'synth' ? p.inst : 'pluck';
           base.inst = KI; base.vol = num(p.vol, 0.8, 0, 1); base.oct = Math.round(num(p.oct, 0, -1, 1));
           base.m = [0, 1, 2, 3].map(function (k) { return num(p.m && p.m[k], B.midi.INST[KI].def[k], 0, 1); });
+          base.live = (p.live instanceof Array ? p.live : [0]).filter(function (k) { return k === 0 || k === 1 || k === 2 || k === 3; }).slice(0, 4);
         }
       } else if (p.type === 'midi') {
         // clip MIDI : jusqu'à 4 voix, chacune avec son instrument, ses 4 macros et ses notes [pas, ligne, longueur]
@@ -810,8 +811,13 @@
             m: [0, 1, 2, 3].map(function (k) { return num(v.m && v.m[k], I.def[k], 0, 1); }), n: notes });
         });
         if (!base.voices.length) return null;
-        base.lv = Math.floor(num(p.lv, 0, 0, base.voices.length - 1));
-        base.lk = Math.floor(num(p.lk, 0, 0, 3));
+        base.layer = !!p.layer;
+        // réglages qui suivent le doigt quand on glisse sur la case : [voix, macro 0..3 ou 4 = octave]
+        var lv = p.live instanceof Array ? p.live : typeof p.lv === 'number' ? [[p.lv, p.lk || 0]] : [];
+        base.live = [];
+        lv.slice(0, 12).forEach(function (l) {
+          if (l instanceof Array && base.voices[l[0]] && l[1] >= 0 && l[1] <= 4) base.live.push([Math.floor(l[0]), Math.floor(l[1])]);
+        });
       } else if (p.type === 'mic') {
         if (sub) return null;
         base.type = 'mic';

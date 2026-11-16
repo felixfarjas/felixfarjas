@@ -218,7 +218,7 @@
     vca.connect(c.inp);
     for (i = 0; i < os.length; i++) os[i].start(t);
     live++;
-    var h = { done: false };
+    var h = { done: false, f: f, flt: inp === vca ? null : inp, flt2: P.flt && P.flt.p4 ? inp : null };
     h.off = function (at) {
       if (h.done) return;
       h.done = true;
@@ -387,8 +387,9 @@
         if (queued[pg].at > nextTick) continue;
         var q = queued[pg];
         delete queued[pg];
-        for (id in active) if (active[id].page === +pg) { delete active[id]; dropChans(id); later(id, nextTime); }
-        active[q.pad.id] = { pad: q.pad, page: +pg, start: q.at };
+        // un clip exclusif remplace celui de sa page ; un clip « en plus » ne coupe personne
+        if (!q.pad.layer) for (id in active) if (active[id].page === q.page && !active[id].pad.layer) { delete active[id]; dropChans(id); later(id, nextTime); }
+        active[q.pad.id] = { pad: q.pad, page: q.page, start: q.at };
         later(q.pad.id, nextTime);
       }
       schedule(nextTick, nextTime + (nextTick % 2 ? cf().swing * tickDur() * 0.5 : 0));
@@ -425,24 +426,28 @@
     if (!any(active) && !any(queued)) halt();
     change(pad.id);
   };
-  // Lance ou arrête un clip. Un seul clip joue par page : le nouveau attend la
-  // fin de celui qui tourne ; sinon il part sur la prochaine mesure de l'horloge.
-  M.toggle = function (pad, page) {
-    var id, cur = null;
+  // Lance ou arrête un clip. Un seul clip exclusif joue par page : le nouveau
+  // attend la fin de celui qui tourne. Un clip réglé « en plus des autres »
+  // (pad.layer) part sur la prochaine mesure sans rien couper.
+  // now : démarrage immédiat, sans attendre (écoute dans l'éditeur).
+  M.toggle = function (pad, page, now) {
+    var id, cur = null, key = pad.layer ? 'L' + pad.id : String(page);
     if (active[pad.id] || M.state(pad) === 'queued') { M.stop(pad); return; }
     A.resume(); A.unkill();
-    for (id in active) if (active[id].page === page) cur = active[id];
+    if (!pad.layer) for (id in active) if (active[id].page === page && !active[id].pad.layer) cur = active[id];
     if (!timer) {
       nextTick = 0; nextTime = ctx().currentTime + 0.05;
       lastTick = 0; lastTime = nextTime;
       active[pad.id] = { pad: pad, page: page, start: 0 };
       timer = setInterval(run, 25);
       run();
+    } else if (now) {
+      queued[key] = { pad: pad, page: page, at: nextTick };
     } else if (cur) {
       var len = cur.pad.bars * 16;
-      queued[page] = { pad: pad, at: cur.start + Math.ceil(Math.max(1, nextTick - cur.start) / len) * len };
+      queued[key] = { pad: pad, page: page, at: cur.start + Math.ceil(Math.max(1, nextTick - cur.start) / len) * len };
     } else {
-      queued[page] = { pad: pad, at: Math.ceil(nextTick / 16) * 16 };
+      queued[key] = { pad: pad, page: page, at: Math.ceil(nextTick / 16) * 16 };
     }
     change(pad.id);
   };
@@ -472,6 +477,20 @@
     M.keyOff(key);
     held[key] = noteOn(chan(pad.id + ':k', pad.vol, I.drive(pad.m)), I.patch(pad.m), M.freq(n, I.oct + (pad.oct || 0)), ctx().currentTime, null, 0.9);
   };
+  // Les réglages du clavier ont bougé pendant qu'on joue : le filtre des notes tenues suit le doigt.
+  M.keyBend = function (pad) {
+    var I = M.INST[pad.inst] || M.INST.pluck, P = I.patch(pad.m), k, h, t = ctx().currentTime;
+    if (!P.flt) return;
+    for (k in held) {
+      h = held[k];
+      if (!h || !h.flt || k.indexOf(pad.id + ':') !== 0) continue;
+      try {
+        h.flt.frequency.cancelScheduledValues(t);
+        h.flt.frequency.setTargetAtTime(Math.min(17000, P.flt.f + (P.flt.kt ? h.f * P.flt.kt : 0)), t, 0.03);
+        h.flt.Q.setTargetAtTime(P.flt.q, t, 0.03);
+      } catch (e) {}
+    }
+  };
   M.keyOff = function (key) {
     if (held[key]) held[key].off(ctx().currentTime);
     delete held[key];
@@ -482,7 +501,7 @@
     return { inst: inst, vol: 0.8, oct: 0, mute: false, m: M.INST[inst].def.slice(), n: [] };
   };
   M.newClip = function (id, color) {
-    var pad = { id: id, type: 'midi', name: 'MIDI', color: color, bars: 2, steps: 16, prog: [0, 5, 2, 6], lv: 0, lk: 0, voices: [M.newVoice('k909')] };
+    var pad = { id: id, type: 'midi', name: 'MIDI', color: color, bars: 2, steps: 16, prog: [0, 5, 2, 6], live: [[0, 2]], layer: false, voices: [M.newVoice('k909')] };
     M.newProg(pad);
     M.generate(pad, 0);
     return pad;
@@ -496,7 +515,7 @@
       M.newProg(pad);
       pad.voices.forEach(function (v, k) { M.generate(pad, k); });
       // le glissé sur la case règle la première macro du premier synthé
-      pad.lv = Math.min(1, pad.voices.length - 1); pad.lk = 0;
+      pad.live = [[Math.min(1, pad.voices.length - 1), 0]];
       return pad;
     }
     return [clip('ACID', '#FDD835', ['k909', 'acid']), clip('TRAP', '#8E24AA', ['ktrap', 'sub', 'bell']),

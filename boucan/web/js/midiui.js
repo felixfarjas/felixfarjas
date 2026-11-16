@@ -134,11 +134,9 @@
       for (k = 0; k < n.length; k++) if (n[k][1] === d && n[k][0] <= s && s < n[k][0] + n[k][2]) return k;
       return -1;
     }
-    function down(x, y) {
-      var p = cell(x, y), v = voice();
-      hit = null;
-      if (!p) return;
-      var k = find(p.s, p.d);
+    var pend = null; // toucher en cours, pas encore décidé : note, allongement ou défilement de la page
+    function begin(p) {
+      var v = voice(), k = find(p.s, p.d);
       if (k >= 0) hit = { nt: v.n[k], was: true, s: p.s, moved: false };
       else {
         var nt = [p.s, p.d, 1];
@@ -149,15 +147,31 @@
       U.buzz();
       changed(); draw();
     }
+    function down(x, y) {
+      hit = null;
+      var p = cell(x, y);
+      pend = p ? { x: x, y: y, p: p } : null;
+    }
+    // renvoie vrai si le geste appartient à la grille (il ne doit alors plus faire défiler la page)
     function move(x, y) {
+      if (pend) {
+        var dx = Math.abs(x - pend.x), dy = Math.abs(y - pend.y);
+        if (dy > 9 && dy >= dx) { pend = null; return false; } // défilement vertical : la page bouge, rien n'est posé
+        if (dx < 9) return false;
+        begin(pend.p);
+        pend = null;
+      }
       var p = hit && cell(x, y);
-      if (!p || drum() || p.s === hit.s) return;
+      if (!hit) return false;
+      if (!p || drum() || p.s === hit.s) return true;
       // glisser vers la droite allonge la note
       hit.moved = true; hit.s = p.s;
       hit.nt[2] = Math.max(1, Math.min(pad.bars * pad.steps - hit.nt[0], p.s - hit.nt[0] + 1));
       changed(); draw();
+      return true;
     }
     function up() {
+      if (pend) { begin(pend.p); pend = null; } // simple toucher
       if (hit && hit.was && !hit.moved) {
         // simple toucher sur une note existante : on l'enlève
         var n = voice().n, k = n.indexOf(hit.nt);
@@ -166,10 +180,10 @@
       }
       hit = null;
     }
-    U.on(c, 'touchstart', function (ev) { ev.preventDefault(); down(ev.targetTouches[0].clientX, ev.targetTouches[0].clientY); });
-    U.on(c, 'touchmove', function (ev) { ev.preventDefault(); if (ev.targetTouches[0]) move(ev.targetTouches[0].clientX, ev.targetTouches[0].clientY); });
-    U.on(c, 'touchend', up);
-    U.on(c, 'touchcancel', up);
+    U.on(c, 'touchstart', function (ev) { down(ev.targetTouches[0].clientX, ev.targetTouches[0].clientY); });
+    U.on(c, 'touchmove', function (ev) { if (ev.targetTouches[0] && move(ev.targetTouches[0].clientX, ev.targetTouches[0].clientY)) ev.preventDefault(); });
+    U.on(c, 'touchend', function (ev) { if (pend || hit) ev.preventDefault(); up(); });
+    U.on(c, 'touchcancel', function () { pend = null; hit = null; });
     U.on(c, 'mousedown', function (ev) { down(ev.clientX, ev.clientY); up(); });
     return {
       el: c, draw: draw,
@@ -191,10 +205,19 @@
   // ====================== Éditeur d'un clip ======================
   X.edit = function (ref) {
     U = B.ui;
-    var pad = U.refGet(ref), vi = 0, bar = 0, raf = null, grid = null, tabs, panel, playB;
+    var pad = U.refGet(ref), vi = 0, bar = 0, raf = null, grid = null, tabs, panel, playB, playIco, playTxt, auto = false, lastOn = null;
     if (!pad) return;
+    if (!(pad.live instanceof Array)) pad.live = [];
     function saved() { M.touch(pad); B.save(); }
-    function playLbl() { playB.textContent = t(M.state(pad) ? 'mdStop' : 'mdPlay'); }
+    function playLbl() {
+      var on = !!M.state(pad);
+      if (on === lastOn) return;
+      lastOn = on;
+      playIco.innerHTML = on ? U.pauseSvg : U.playSvg;
+      playTxt.textContent = t(on ? 'mdStop' : 'mdPlay');
+      playB.className = 'btn mdPlay' + (on ? ' on' : '');
+    }
+    function liveHas(v, k) { return pad.live.some(function (l) { return l[0] === v && l[1] === k; }); }
 
     function rebuild() {
       var v, I;
@@ -203,7 +226,7 @@
       v = pad.voices[vi]; I = M.INST[v.inst];
       tabs.innerHTML = ''; panel.innerHTML = '';
       pad.voices.forEach(function (x, k) {
-        U.add(tabs, btn(instName(x.inst), k === vi ? 'on' : '', function () { vi = k; rebuild(); }));
+        U.add(tabs, btn(instName(x.inst), (k === vi ? 'on' : '') + (x.mute ? ' muted' : ''), function () { vi = k; rebuild(); }));
       });
       if (pad.voices.length < M.MAX_VOICES) {
         U.add(tabs, btn('+', 'more', function () {
@@ -215,17 +238,7 @@
           });
         }));
       }
-      var instB = btn(I.name + '  ▾', 'accent', function () {
-        X.pickInst(v.inst, false, function (id) {
-          var kind = M.INST[id].kind !== I.kind;
-          v.inst = id;
-          v.m = M.INST[id].def.slice();
-          // on passe de la batterie à un synthé (ou l'inverse) : l'ancien motif n'a plus de sens
-          if (kind) M.generate(pad, vi);
-          saved(); rebuild();
-        });
-      });
-      block(panel, t('mdInst'), instB);
+      // 1. les notes
       var seqBox = block(panel, t(I.kind === 'drum' ? 'mdDrums' : 'mdNotes'));
       if (pad.bars > 1) {
         var bars = [], k;
@@ -242,24 +255,52 @@
       U.add(seqBox, grid.el, acts, U.h('div', 'note', t(I.kind === 'drum' ? 'mdDrumsNote' : 'mdNotesNote')));
       setTimeout(grid.draw, 0);
 
-      var mix = block(panel, t('volume'), U.rangeS(function () { return v.vol; }, function (x) { v.vol = Math.round(x * 20) / 20; B.save(); },
+      // 2. l'instrument, et sa coupure temporaire juste à côté
+      var instB = btn(I.name + '  ▾', 'accent', function () {
+        X.pickInst(v.inst, false, function (id) {
+          var kind = M.INST[id].kind !== I.kind;
+          v.inst = id;
+          v.m = M.INST[id].def.slice();
+          // on passe de la batterie à un synthé (ou l'inverse) : l'ancien motif n'a plus de sens
+          if (kind) { M.generate(pad, vi); pad.live = pad.live.filter(function (l) { return l[0] !== vi; }); }
+          saved(); rebuild();
+        });
+      });
+      var muteB = btn(t('mdMute'), 'mute' + (v.mute ? ' on' : ''), function () {
+        v.mute = !v.mute;
+        muteB.className = 'btn mute' + (v.mute ? ' on' : '');
+        tabs.childNodes[vi].className = 'btn on' + (v.mute ? ' muted' : '');
+        B.save();
+      });
+      block(panel, t('mdInst'), U.add(U.h('div', 'row'), instB, muteB));
+
+      block(panel, t('volume'), U.rangeS(function () { return v.vol; }, function (x) { v.vol = Math.round(x * 20) / 20; B.save(); },
         function () { return Math.round(v.vol * 100) + ' %'; }));
-      U.add(mix, U.check(t('mdMute'), !!v.mute, function (on) { v.mute = on; B.save(); }));
-      mix.lastChild.style.marginTop = '8px';
       if (I.kind !== 'drum') {
         block(panel, t('mdOct'), U.choice([[-1, '−1'], [0, '0'], [1, '+1']], v.oct || 0, function (o) { v.oct = o; B.save(); }));
       }
       var mac = block(panel, t('mdMacros'));
       macros(mac, v.inst, v.m, function () { B.save(); });
-      // quel réglage suit le doigt quand on glisse sur la case
+
+      // 3. ce que le glissé sur la case fait bouger : autant de réglages qu'on veut, sur toutes les voix
+      var liveBox = U.h('div', 'sw two');
       var opts = I.macros.map(function (key, k) { return [k, t('mm.' + key)]; });
-      var live = U.choice(opts, pad.lv === vi ? pad.lk : -1, function (k) { pad.lv = vi; pad.lk = k; B.save(); });
-      live.className = 'row tight';
-      block(panel, t('mdLive'), live, U.h('div', 'note', t('mdLiveNote')));
+      if (I.kind !== 'drum') opts.push([4, t('mdOct')]);
+      opts.forEach(function (o) {
+        var b = btn(o[1], liveHas(vi, o[0]) ? 'on' : '', function () {
+          if (liveHas(vi, o[0])) pad.live = pad.live.filter(function (l) { return !(l[0] === vi && l[1] === o[0]); });
+          else pad.live.push([vi, o[0]]);
+          b.className = 'btn' + (liveHas(vi, o[0]) ? ' on' : '');
+          B.save();
+        });
+        U.add(liveBox, U.add(U.h('div'), b));
+      });
+      block(panel, t('mdLive'), liveBox, U.h('div', 'note', t('mdLiveNote')));
       if (pad.voices.length > 1) {
         block(panel, '', btn(t('mdDelVoice'), 'danger', function () {
           pad.voices.splice(vi, 1);
-          if (pad.lv >= pad.voices.length) { pad.lv = 0; pad.lk = 0; }
+          // les réglages au glissé suivent la renumérotation des voix
+          pad.live = pad.live.filter(function (l) { return l[0] !== vi; }).map(function (l) { return [l[0] > vi ? l[0] - 1 : l[0], l[1]]; });
           vi = 0;
           saved(); rebuild();
         }));
@@ -267,22 +308,28 @@
     }
 
     U.sheet(t('mdClip'), function (body, sh) {
-      playB = btn('', 'accent', function () { M.toggle(pad, ref.pi); playLbl(); });
+      playB = U.h('button', 'btn mdPlay'); playIco = U.h('span', 'mdIco'); playTxt = U.h('span');
+      U.add(playB, playIco, playTxt);
+      U.on(playB, 'click', function () { auto = false; M.toggle(pad, ref.pi, true); playLbl(); });
       var dice = btn(t('mdGenAll'), '', function () {
         M.newProg(pad);
         pad.voices.forEach(function (x, k) { M.generate(pad, k); });
         saved(); grid.draw();
       });
-      playLbl();
-      U.sec(body, '', U.add(U.h('div', 'row'), playB, dice), U.h('div', 'note', t('mdGenNote')));
+      U.sec(body, '', playB);
+      // longueur et précision côte à côte, sur une seule ligne : la grille reste visible sans défiler
+      var len = U.choice([[1, '1'], [2, '2'], [4, '4']], pad.bars, function (b) { M.setBars(pad, b); B.save(); rebuild(); });
+      var gr = U.choice([[8, '1/8'], [16, '1/16']], pad.steps, function (s) { M.setSteps(pad, s); B.save(); rebuild(); });
+      len.className = gr.className = 'row tight';
+      var two = U.add(U.h('div', 'row'), U.add(U.h('div'), U.h('div', 'secLbl', t('mdLen')), len), U.add(U.h('div'), U.h('div', 'secLbl', t('mdGrid')), gr));
+      U.sec(body, '', two);
 
       tabs = U.h('div', 'row tight'); panel = U.h('div');
       U.sec(body, t('mdVoices'), tabs, panel);
 
-      var len = U.choice([[1, '1'], [2, '2'], [4, '4']], pad.bars, function (b) { M.setBars(pad, b); B.save(); rebuild(); });
-      U.sec(body, t('mdLen'), len);
-      U.sec(body, t('mdGrid'), U.choice([[8, '1/8'], [16, '1/16']], pad.steps, function (s) { M.setSteps(pad, s); B.save(); rebuild(); }),
-        U.h('div', 'note', t('mdGridNote')));
+      U.sec(body, t('mdGenAll'), dice, U.h('div', 'note', t('mdGenNote')));
+      U.sec(body, t('mdLayerSec'), U.check(t('mdLayer'), !!pad.layer, function (on) { M.stop(pad); pad.layer = on; B.save(); }),
+        U.h('div', 'note', t('mdLayerNote')));
       var setB = btn('', '', function () { X.openSettings(function () { setLbl(); rebuild(); }); });
       var setLbl = function () { setB.textContent = B.cfg.midi.bpm + ' BPM  ·  ' + M.KEYS[B.cfg.midi.root] + ' ' + t('sc.' + B.cfg.midi.scale); };
       setLbl();
@@ -290,22 +337,44 @@
 
       U.sec(body, t('name'), U.field(pad.name, 24, function (v) { pad.name = v; B.save(); }));
       U.sec(body, t('color'), U.swatches(pad.color, function (c) { pad.color = c; B.save(); if (grid) grid.draw(); }));
-      var move = btn(t('move'), '', function () { sh.close(); U.state.moving = { ref: ref, pad: pad }; U.renderAll(); });
+      var dup = btn(t('mdDup'), '', function () {
+        // copie dans la première case libre : d'abord sur cette page, puis sur les suivantes
+        var order = [ref.pi], k, done = false;
+        for (k = 0; k < B.cfg.pages.length; k++) if (k !== ref.pi) order.push(k);
+        order.forEach(function (pi) {
+          var pg = B.cfg.pages[pi], i;
+          for (i = 0; i < B.SLOTS && !done; i++) {
+            if (pg.pads[i] || B.cover(pg, i) >= 0) continue;
+            var copy = JSON.parse(JSON.stringify(pad));
+            copy.id = B.uid('p');
+            pg.pads[i] = copy;
+            done = true;
+            U.toast(t('mdDupDone', pg.name || String(pi + 1)), 2500);
+          }
+        });
+        if (!done) U.toast(t('mdNoRoom'), 3000);
+        B.saveNow();
+      });
+      var move = btn(t('move'), 'gap', function () { sh.close(); U.state.moving = { ref: ref, pad: pad }; U.renderAll(); });
       var clear = btn(t('clear'), 'gap danger', function () {
         U.ask(t('askClear', pad.name || 'MIDI'), t('doClear'), function () { M.stop(pad); U.refSet(ref, null); sh.close(); });
       });
-      U.sec(body, t('padSec'), move, clear);
+      U.sec(body, t('padSec'), dup, move, clear);
 
       rebuild();
+      // en ouvrant l'éditeur, le clip joue : on entend ce qu'on compose
+      if (!M.state(pad)) { M.toggle(pad, ref.pi, true); auto = true; }
       // tête de lecture sur la grille
       (function tick() {
         var st = M.stepOf(pad), col = st - bar * pad.steps;
         if (grid) grid.head(st >= 0 && col >= 0 && col < pad.steps ? col : -1);
-        if (playB) playLbl();
+        playLbl();
         raf = window.requestAnimationFrame(tick);
       })();
     }, function () {
       if (raf) window.cancelAnimationFrame(raf);
+      // lancé par l'éditeur : il s'arrête avec lui
+      if (auto && M.state(pad) && U.refGet(ref) === pad) M.stop(pad);
       M.touch(pad);
       B.saveNow();
       U.renderAll();
@@ -317,7 +386,7 @@
   var NKEYS = 8;
   X.keysDom = function () {
     U = B.ui;
-    var d = { el: U.h('div', 'kbd'), keys: [], pad: null, cur: {} }, k;
+    var d = { el: U.h('div', 'kbd'), keys: [], pad: null, cur: {}, y0: {}, m0: {} }, k;
     for (k = 0; k < NKEYS; k++) { d.keys.push(U.h('div', 'key')); U.add(d.el, d.keys[k]); }
     function keyAt(x) {
       var r = d.el.getBoundingClientRect();
@@ -328,9 +397,19 @@
       for (id in d.cur) on[d.cur[id]] = 1;
       d.keys.forEach(function (e, i) { var c = e.base + (on[i] ? ' down' : ''); if (e.className !== c) e.className = c; });
     }
-    function start(id, x) {
+    // le doigt monte ou descend : les réglages choisis suivent, et le filtre de la note tenue avec
+    function bend(id, y) {
+      if (d.y0[id] === undefined || !d.pad || !(d.pad.live || []).length) return;
+      var dv = (d.y0[id] - y) / 110;
+      if (Math.abs(dv) < 0.08 && !d.bent) return;
+      d.bent = true;
+      d.pad.live.forEach(function (k) { d.pad.m[k] = Math.round(Math.max(0, Math.min(1, d.m0[id][k] + dv)) * 100) / 100; });
+      M.keyBend(d.pad);
+    }
+    function start(id, x, y) {
       if (!d.pad || U.state.edit) return;
       var k2 = keyAt(x);
+      if (d.cur[id] === undefined && typeof y === 'number') { d.y0[id] = y; d.m0[id] = d.pad.m.slice(); }
       if (d.cur[id] === k2) return;
       d.cur[id] = k2;
       M.keyOn(d.pad, d.pad.id + ':' + id, k2);
@@ -338,14 +417,15 @@
     }
     function stop(id) {
       if (d.cur[id] === undefined) return;
-      delete d.cur[id];
+      delete d.cur[id]; delete d.y0[id]; delete d.m0[id];
+      if (d.bent) { d.bent = false; B.save(); }
       if (d.pad) M.keyOff(d.pad.id + ':' + id);
       lit();
     }
     function each(ev, fn) { for (var i = 0; i < ev.changedTouches.length; i++) fn(ev.changedTouches[i]); }
-    U.on(d.el, 'touchstart', function (ev) { if (!U.state.edit) ev.preventDefault(); each(ev, function (tc) { start(tc.identifier, tc.clientX); }); });
+    U.on(d.el, 'touchstart', function (ev) { if (!U.state.edit) ev.preventDefault(); each(ev, function (tc) { start(tc.identifier, tc.clientX, tc.clientY); }); });
     // glisser d'une touche à l'autre joue les notes au passage
-    U.on(d.el, 'touchmove', function (ev) { if (!U.state.edit) ev.preventDefault(); each(ev, function (tc) { if (d.cur[tc.identifier] !== undefined) start(tc.identifier, tc.clientX); }); });
+    U.on(d.el, 'touchmove', function (ev) { if (!U.state.edit) ev.preventDefault(); each(ev, function (tc) { if (d.cur[tc.identifier] !== undefined) { start(tc.identifier, tc.clientX); bend(tc.identifier, tc.clientY); } }); });
     var end = function (ev) { each(ev, function (tc) { stop(tc.identifier); }); };
     U.on(d.el, 'touchend', end);
     U.on(d.el, 'touchcancel', end);
@@ -355,13 +435,14 @@
   };
   X.keysPaint = function (d, pad) {
     d.pad = pad;
+    if (!(pad.live instanceof Array)) pad.live = [0];
     d.keys.forEach(function (e, k) {
       e.base = 'key' + (M.isRoot(k) ? ' root' : '');
       if (e.shown !== M.noteName(k)) { e.shown = M.noteName(k); e.textContent = e.shown; }
       if (e.className.indexOf('down') < 0) e.className = e.base;
     });
   };
-  X.newKeys = function () { return { inst: 'pluck', vol: 0.8, oct: 0, m: M.INST.pluck.def.slice() }; };
+  X.newKeys = function () { return { inst: 'pluck', vol: 0.8, oct: 0, m: M.INST.pluck.def.slice(), live: [0] }; };
 
   X.editKeys = function (ref) {
     U = B.ui;
@@ -369,7 +450,21 @@
     if (!pad) return;
     U.sheet(t('typeKeys'), function (body, sh) {
       var mac = U.h('div');
-      function fill() { mac.innerHTML = ''; macros(mac, pad.inst, pad.m, function () { B.save(); }); }
+      var liveBox = U.h('div', 'sw two');
+      if (!(pad.live instanceof Array)) pad.live = [0];
+      function fill() {
+        mac.innerHTML = ''; liveBox.innerHTML = '';
+        macros(mac, pad.inst, pad.m, function () { B.save(); });
+        M.INST[pad.inst].macros.forEach(function (key, k) {
+          var b = btn(t('mm.' + key), pad.live.indexOf(k) >= 0 ? 'on' : '', function () {
+            var at = pad.live.indexOf(k);
+            if (at >= 0) pad.live.splice(at, 1); else pad.live.push(k);
+            b.className = 'btn' + (pad.live.indexOf(k) >= 0 ? ' on' : '');
+            B.save();
+          });
+          U.add(liveBox, U.add(U.h('div'), b));
+        });
+      }
       var instB = btn(instName(pad.inst) + '  ▾', 'accent', function () {
         X.pickInst(pad.inst, true, function (id) {
           pad.inst = id; pad.m = M.INST[id].def.slice();
@@ -382,6 +477,7 @@
       U.sec(body, t('volume'), U.rangeS(function () { return pad.vol; }, function (x) { pad.vol = Math.round(x * 20) / 20; B.save(); },
         function () { return Math.round(pad.vol * 100) + ' %'; }));
       U.sec(body, t('mdMacros'), mac);
+      U.sec(body, t('keysLive'), liveBox, U.h('div', 'note', t('keysLiveNote')));
       fill();
       var setB = btn(M.KEYS[B.cfg.midi.root] + ' ' + t('sc.' + B.cfg.midi.scale), '', function () { X.openSettings(function () { sh.close(); X.editKeys(ref); }); });
       U.sec(body, t('mdSet'), setB, U.h('div', 'note', t('mdSetNote')));
