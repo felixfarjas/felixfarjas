@@ -300,6 +300,9 @@
     if (!B.cfg || document.hidden) return;
     if (shown('deck')) deckPaintAll();
     B.deck.pump(); // ondes d'avance, quand rien ne joue
+    // mode sync : tempo du morceau en cours analysé si besoin, et effets calés qui suivent le tempo
+    if (B.cfg.sync && B.deck.analyse()) deckPaintAll();
+    B.midi.poll();
     if (!NATIVE || !window.BoucanNative.playerState || !shown('player')) return;
     var st;
     try { st = JSON.parse(window.BoucanNative.playerState()); } catch (e) { return; }
@@ -452,7 +455,8 @@
     setText(d.now, D.track ? D.track.t + (D.track.a ? ' — ' + D.track.a : '') : '');
     // temps écoulé / durée, à droite du titre
     var tm = D.track ? D.times() : null;
-    setText(d.time, D.loading() ? '\u2026' : tm && tm[1] > 0 ? clock(tm[0]) + ' / ' + clock(tm[1]) : '');
+    var bp = B.cfg.sync && D.track ? D.bpmOf(D.track) : 0;
+    setText(d.time, D.loading() ? '\u2026' : tm && tm[1] > 0 ? (bp ? Math.round(bp) + ' BPM · ' : '') + clock(tm[0]) + ' / ' + clock(tm[1]) : '');
     setHtml(d.play, D.wanted() ? SVG_PAUSE : SVG_PLAY);
     var vw = (B.cfg.deck.vol * 100) + '%';
     if (d.shownVol !== vw) { d.shownVol = vw; d.fill.style.width = vw; }
@@ -555,6 +559,21 @@
       function set(c) { if (c) B.cfg.deck.colors[key] = c; else delete B.cfg.deck.colors[key]; refresh(); sh.close(); }
       on(none, 'click', function () { set(''); });
       sec(body, t('color'), swatches(B.cfg.deck.colors[key] || '', set), none);
+      // tempo du morceau (mode sync) : corrigeable s'il a été lu à la moitié ou au double
+      var bpmL = h('div', 'time'), bpmRow = h('div', 'row');
+      var bpmShow = function () { var bi = B.cfg.deck.bpm[key]; bpmL.textContent = bi ? bi[0] + ' BPM' : t('bpmNone'); };
+      var bpmMul = function (k) {
+        var b = h('button', 'btn', k > 1 ? '\u00d72' : '\u00f72');
+        on(b, 'click', function () { var bi = B.cfg.deck.bpm[key]; if (bi) { bi[0] = Math.round(Math.max(40, Math.min(240, bi[0] * k)) * 100) / 100; B.save(); bpmShow(); } });
+        return b;
+      };
+      var bpmRe = h('button', 'btn gap', t('bpmRedo'));
+      on(bpmRe, 'click', function () {
+        if (B.deck.track !== track) B.deck.play(track);
+        setTimeout(function () { toast(B.deck.analyse(true) ? t('bpmDone') : t('bpmWait'), 2500); bpmShow(); }, 400);
+      });
+      bpmShow();
+      sec(body, t('bpmSec'), add(bpmRow, bpmMul(0.5), bpmL, bpmMul(2)), bpmRe, h('div', 'note', t('bpmNote')));
       var hideB = h('button', 'btn danger', t('trackHide'));
       on(hideB, 'click', function () { B.deck.hide(track, true); sh.close(); toast(t('trackHidden'), 3000); });
       sec(body, t('trackHideSec'), hideB, h('div', 'note', t('trackHideNote')));
@@ -780,22 +799,27 @@
 
   // Case FX « réglable en glissant » : doigt tenu, monter ou descendre change
   // la valeur. L'écran s'assombrit, un camembert et le contour montrent le dosage.
-  function adjShow(hd) {
-    var pad = hd.pad, a = hd.adj, v = a.get(), r = hd.view.inn.getBoundingClientRect(), size = 190, st = el.adjBox.style;
+  // Jauge affichée pendant un réglage au glissé : écran légèrement assombri, camembert, contour qui s'épaissit.
+  function gauge(r, color, v, txt, name) {
+    var size = 190, st = el.adjBox.style;
     st.left = Math.max(8, Math.min(window.innerWidth - size - 8, r.left + r.width / 2 - size / 2)) + 'px';
     st.top = Math.max(8, Math.min(window.innerHeight - size - 8, r.top + r.height / 2 - size / 2)) + 'px';
-    st.borderColor = pad.color;
+    st.borderColor = color;
     st.borderWidth = Math.round(4 + 14 * v) + 'px';
     var c = el.adjPie, dpr = window.devicePixelRatio || 1, n = Math.round(84 * dpr), g = c.getContext('2d'), a0 = -Math.PI / 2;
     if (c.width !== n) { c.width = n; c.height = n; }
     g.clearRect(0, 0, n, n);
-    g.fillStyle = pad.color;
+    g.fillStyle = color;
     g.beginPath(); g.moveTo(n / 2, n / 2); g.arc(n / 2, n / 2, n / 2 - 3 * dpr, a0, a0 + Math.PI * 2 * Math.max(0.001, v)); g.closePath(); g.fill();
     g.strokeStyle = '#fff'; g.lineWidth = 2 * dpr;
     g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 3 * dpr, 0, Math.PI * 2); g.stroke();
-    el.adjTxt.textContent = a.label();
-    el.adjName.textContent = a.name;
+    el.adjTxt.textContent = txt;
+    el.adjName.textContent = name;
     el.adj.className = 'on';
+  }
+  function adjShow(hd) {
+    var a = hd.adj;
+    gauge(hd.view.inn.getBoundingClientRect(), hd.pad.color, a.get(), a.label(), a.name);
   }
   function adjHide() { el.adj.className = ''; }
   function adjMove(hd, y) {
@@ -843,7 +867,7 @@
         return { v: mv, k: l[1], s: l[1] === 4 ? mv.oct || 0 : mv.m[l[1]], key: l[1] === 4 ? 'mdOct' : 'mm.' + B.midi.INST[mv.inst].macros[l[1]] };
       });
       if (tg.length && typeof y === 'number') hd.adj = { y: y, on: false,
-        name: (pad.name || 'MIDI') + ' · ' + (tg.length > 1 ? tg.length + ' ' + t('mdParams') : t(tg[0].key)),
+        name: tg.map(function (x) { return t(x.key); }).join(' + '),
         get: function () { return tg[0].k === 4 ? ((tg[0].v.oct || 0) + 1) / 2 : tg[0].v.m[tg[0].k]; },
         label: function () { return tg[0].k === 4 ? ((tg[0].v.oct || 0) > 0 ? '+' : '') + (tg[0].v.oct || 0) : Math.round(tg[0].v.m[tg[0].k] * 100) + ' %'; },
         delta: function (d) {
@@ -1172,7 +1196,7 @@
     if (r.s < 0) pg.pads[r.i] = v;
     else if (pg.pads[r.i] && pg.pads[r.i].type === 'hub') pg.pads[r.i].subs[r.s] = v;
   }
-  function small(p) { return !p || (p.type || 'sample') === 'sample' || p.type === 'fx'; }
+  function small(p) { return !p || (p.type || 'sample') === 'sample' || p.type === 'fx' || p.type === 'midi'; }
 
   function editTap(i, s) {
     var cell = page().pads[i], hub = !!cell && cell.type === 'hub';
@@ -1498,7 +1522,7 @@
       big('sample', t('newRec'), t('noteRec'), function () { make('sample', null, 'REC'); open({ rec: true }); });
       if (!sub) big('mic', t('newMic'), t('noteMic'), function () { make('mic'); open(); });
       big('fx', t('newFx'), t('noteFx'), function () { make('fx'); open(); });
-      if (!sub) big('midi', t('newMidi'), t('noteMidi'), function () {
+      big('midi', t('newMidi'), t('noteMidi'), function () {
         refSet(ref, B.midi.newClip(B.uid('p'), B.COLORS[(i + 4) % B.COLORS.length]));
         B.saveNow(); open();
       });
@@ -2120,7 +2144,11 @@
       var mdB = btn('', '', function () { B.midiUI.openSettings(mdLbl); });
       function mdLbl() { mdB.textContent = B.cfg.midi.bpm + ' BPM  ·  ' + B.midi.KEYS[B.cfg.midi.root] + ' ' + t('sc.' + B.cfg.midi.scale); }
       mdLbl();
-      sec(body, t('mdSet'), mdB, h('div', 'note', t('mdSetNote')));
+      sec(body, t('mdSet'), mdB, h('div', 'note', t('mdSetNote')),
+        check(t('syncMode'), B.cfg.sync, function (v) { B.cfg.sync = v; B.save(); if (v) B.deck.analyse(); B.midi.poll(); }),
+        h('div', 'note', t('syncNote')),
+        check(t('fxSync'), B.cfg.fxSync, function (v) { B.cfg.fxSync = v; B.save(); A.refx(); }),
+        h('div', 'note', t('fxSyncNote')));
 
       setsSection(body, function () { sh.close(); openMenu(); });
 
@@ -2234,7 +2262,7 @@
   // Boîte à outils pour les modules d'interface chargés après celui-ci (midiui.js).
   B.ui = { h: h, add: add, on: on, sheet: sheet, sec: sec, choice: choice, check: check, rangeS: rangeS, swatches: swatches, field: field,
     toast: toast, ask: ask, buzz: buzz, ink: ink, refGet: refGet, refSet: refSet, renderAll: renderAll, state: S };
-  B.ui.playSvg = SVG_PLAY; B.ui.pauseSvg = SVG_PAUSE;
+  B.ui.playSvg = SVG_PLAY; B.ui.pauseSvg = SVG_PAUSE; B.ui.gauge = gauge; B.ui.gaugeHide = adjHide;
 
   if (document.readyState === 'loading') on(document, 'DOMContentLoaded', boot); else boot();
 })(window.Boucan);

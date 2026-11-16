@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.7';
+  B.VERSION = '2.8';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.MAX_SETS = 12;
@@ -389,6 +389,7 @@
       chop.type = 'square'; chop.frequency.value = 7;
       // le carré est arrondi (2 ms de fondu) : plus de clic à chaque hachure
       var chopLp = filter('lowpass', 180, 0.5);
+      A.chopLp = chopLp;
       chop.connect(chopLp); chopLp.connect(A.tremDepth); A.tremDepth.connect(trem.gain); chop.start(0);
     } catch (e) {}
     A.route();
@@ -451,6 +452,21 @@
     }
   }
 
+  // Hachoir calé sur le tempo : on le relance pile sur un temps de l'horloge.
+  function rechop(hz, at) {
+    try {
+      var old = A.chop, o = A.ctx.createOscillator();
+      o.type = 'square';
+      o.frequency.value = hz;
+      o.connect(A.chopLp);
+      o.start(at);
+      old.stop(at);
+      A.chop = o;
+    } catch (e) {}
+  }
+  // Les effets calés sur le tempo doivent suivre quand le tempo change (mode sync).
+  A.refx = function () { if (A.ctx) applyFx(0.05); };
+
   // tc : temps de réponse général ; ftc : celui des filtres et du cut.
   function applyFx(tc, ftc) {
     var t = A.ctx.currentTime, amt = {}, P = {}, id;
@@ -470,6 +486,11 @@
     var pk = P.pitch ? Math.pow(2, P.pitch.st / 12) : ty === 'pitchup' ? Math.pow(2, sv.st * A.fx.amt / 12) :
       ty === 'pitchdn' ? Math.pow(2, -sv.st * A.fx.amt / 12) : 1;
     if (pk !== A.pitchK) { A.pitchK = pk; retune(); }
+    // effets calés sur le tempo (réglage du menu) : écho, hachoir et loop tombent sur des divisions du temps
+    var syn = B.cfg && B.cfg.fxSync !== false && B.midi, et = P.echo ? P.echo.time : ty === 'echo' ? sv.time : 0.32, ll = P.loop ? P.loop.len : 0;
+    if (syn) { et = B.midi.div(et, 0.98); hz = B.midi.rateQ(hz); if (ll) ll = B.midi.div(ll, 0.98); }
+    if (gat > 0 && !A.gateOn && syn && B.midi.nextBeat()) rechop(hz, B.midi.nextBeat());
+    A.gateOn = gat > 0;
 
     link('rev', rev > 0.001); link('mega', meg > 0.001); link('disto', dis > 0.001);
     A.fxEcho = ech;
@@ -478,11 +499,12 @@
     set(A.revSend.gain, 3.2 * Math.pow(rev, 0.8));
     set(A.dry.gain, Math.max(0, 1 - 0.88 * rev - 0.5 * ech));
     set(A.eSend.gain, 1.2 * ech);
-    set(A.delay.delayTime, P.echo ? P.echo.time : ty === 'echo' ? sv.time : 0.32, 0.05);
+    set(A.delay.delayTime, Math.min(0.98, et), 0.05);
     if (!A.killed) set(A.fb.gain, A.fxFb);
     set(A.lp.frequency, 20000 * Math.pow(0.006, hc) * Math.pow(0.18, rev), ftc);
     set(A.lp.Q, 0.7 + (ty === 'highcut' && !P.highcut ? sv.q - 0.7 : 7) * hc, ftc);
-    set(A.hp.frequency, 20 * Math.pow(400, lc), ftc);
+    // reverb : passé la moitié, un coupe-bas s'installe peu à peu (jusqu'à 500 Hz à fond)
+    set(A.hp.frequency, Math.max(20 * Math.pow(400, lc), rev > 0.5 ? 20 * Math.pow(25, (rev - 0.5) * 2) : 20), ftc);
     set(A.hp.Q, 0.7 + (ty === 'lowcut' && !P.lowcut ? sv.q - 0.7 : 7) * lc, ftc);
     set(A.mega.gain, 1.3 * meg);
     set(A.disto.gain, dis);
@@ -493,7 +515,7 @@
     if (A.chop) set(A.chop.frequency, hz, 0.01);
     set(A.trem.gain, 1 - gat / 2);
     set(A.tremDepth.gain, gat / 2);
-    if (P.loop) set(A.lDel.delayTime, P.loop.len, 0.004);
+    if (ll) set(A.lDel.delayTime, ll, 0.004);
     set(A.lGate.gain, 1 - lop, 0.003); set(A.lFb.gain, lop, 0.003);
     set(A.lDry.gain, 1 - lop, 0.003); set(A.lWet.gain, lop, 0.003);
     A.cutG.gain.setTargetAtTime(cut ? 0 : 1, t, P.cut ? P.cut.sweep : Math.min(ftc, 0.004));
@@ -509,6 +531,7 @@
     var t = A.ctx.currentTime, id;
     A.braked = on;
     if (B.deck && A.target !== 'pads') B.deck.brake(on, time);
+    if (B.midi && A.target !== 'music') B.midi.brake(on, time);
     if (A.target === 'music') return;
     for (id in A.voices) {
       var r = A.voices[id].src.playbackRate;
@@ -729,7 +752,7 @@
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, midi: { bpm: 120, root: 9, scale: 'minor', swing: 0 }, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {}, cues: {}, hidden: {} }, sets: [],
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, sync: false, fxSync: true, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, midi: { bpm: 120, root: 9, scale: 'minor', swing: 0 }, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {}, cues: {}, hidden: {}, bpm: {} }, sets: [],
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -787,11 +810,11 @@
           var KI = B.midi.INST[p.inst] && B.midi.INST[p.inst].kind === 'synth' ? p.inst : 'pluck';
           base.inst = KI; base.vol = num(p.vol, 0.8, 0, 1); base.oct = Math.round(num(p.oct, 0, -1, 1));
           base.m = [0, 1, 2, 3].map(function (k) { return num(p.m && p.m[k], B.midi.INST[KI].def[k], 0, 1); });
+          base.rows = p.rows === 2 ? 2 : 1;
           base.live = (p.live instanceof Array ? p.live : [0]).filter(function (k) { return k === 0 || k === 1 || k === 2 || k === 3; }).slice(0, 4);
         }
       } else if (p.type === 'midi') {
         // clip MIDI : jusqu'à 4 voix, chacune avec son instrument, ses 4 macros et ses notes [pas, ligne, longueur]
-        if (sub) return null;
         base.type = 'midi';
         base.bars = p.bars === 1 || p.bars === 4 ? p.bars : 2;
         base.steps = p.steps === 8 ? 8 : 16;
@@ -865,12 +888,18 @@
     }
     cfg.vibrate = raw.vibrate !== false;
     cfg.duck = B.DUCKS.indexOf(raw.duck) >= 0 ? raw.duck : 'duck';
+    cfg.sync = raw.sync === true;
+    cfg.fxSync = raw.fxSync !== false;
     cfg.swipe = raw.swipe !== false;
     cfg.editHold = raw.editHold === true;
     cfg.duckFade = num(raw.duckFade, 0.3, 0, 3);
     var dk = raw.deck && typeof raw.deck === 'object' ? raw.deck : {};
     cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), brake: num(dk.brake, 0.5, 0, 3), xspin: dk.xspin !== false, colors: {}, notes: {}, cues: {}, hidden: {} };
     // morceaux retirés de l'app (le fichier reste sur le téléphone)
+    // tempo analysé des morceaux (mode sync), par nom de fichier : [bpm, instant du premier temps fort]
+    cfg.deck.bpm = {};
+    var bps = dk.bpm && typeof dk.bpm === 'object' ? dk.bpm : {}, bn = 0, bkk;
+    for (bkk in bps) if (bn < 5000 && bps[bkk] instanceof Array) { cfg.deck.bpm[bkk] = [num(bps[bkk][0], 120, 40, 240), num(bps[bkk][1], 0, 0, 30)]; bn++; }
     var hid = dk.hidden && typeof dk.hidden === 'object' ? dk.hidden : {}, hn = 0, hk;
     for (hk in hid) if (hn < 5000 && hid[hk]) { cfg.deck.hidden[hk] = 1; hn++; }
     // points de départ des morceaux (par nom de fichier) : s = seconde de départ, f = fondu d'entrée
@@ -955,7 +984,7 @@
       var d = new Date(), size = 0;
       var head = utf8(JSON.stringify({
         app: 'boucan', format: 1, version: B.VERSION, date: d.toISOString(), config: tagsOnly ? null : B.cfg,
-        tags: tagsOnly ? { colors: B.cfg.deck.colors, notes: B.cfg.deck.notes, cues: B.cfg.deck.cues, hidden: B.cfg.deck.hidden } : undefined,
+        tags: tagsOnly ? { colors: B.cfg.deck.colors, notes: B.cfg.deck.notes, cues: B.cfg.deck.cues, hidden: B.cfg.deck.hidden, bpm: B.cfg.deck.bpm } : undefined,
         samples: ids.map(function (id, k) { return { id: id, size: blobs[k].byteLength }; }),
         music: music.map(function (m) { return { dir: m.dir, name: m.name, size: m.size, c: m.c || '' }; })
       }));
@@ -1017,7 +1046,7 @@
   // Fusionne des étiquettes de morceaux importées (celles du fichier l'emportent).
   B.applyTags = function (tags) {
     var merged = B.sanitize({ pages: [], deck: tags }).deck, n = 0;
-    ['colors', 'notes', 'cues', 'hidden'].forEach(function (k) {
+    ['colors', 'notes', 'cues', 'hidden', 'bpm'].forEach(function (k) {
       for (var f in merged[k]) { B.cfg.deck[k][f] = merged[k][f]; n++; }
     });
     return B.saveNow().then(function () { return n; });

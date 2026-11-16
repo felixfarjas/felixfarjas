@@ -412,6 +412,23 @@
   function after() { var i = index(); return i >= 0 ? D.queue[i + 1] || null : null; }
   D.playing = ePlaying;
   D.exact = function () { return mode === 'buf'; };
+  // Mode sync : tempo, premier temps fort, position et vitesse du morceau qui joue (ou null).
+  D.beat = function () {
+    if (mode !== 'buf' || !bOn || !bsrc || !D.track) return null;
+    var info = cfg().bpm[D.key(D.track)];
+    if (!info) return null;
+    bSync();
+    return { bpm: info[0], off: info[1], pos: bpos, rate: bsrc.playbackRate.value };
+  };
+  D.bpmOf = function (t) { var i = cfg().bpm[D.key(t)]; return i ? i[0] : 0; };
+  // Analyse (ou ré-analyse) le tempo du morceau en cours s'il est en mémoire. Renvoie vrai si c'est fait.
+  D.analyse = function (force) {
+    var t = D.track, b = t && bufs[t.id];
+    if (!b || (!force && cfg().bpm[D.key(t)])) return false;
+    cfg().bpm[D.key(t)] = tempoOf(b);
+    B.save();
+    return true;
+  };
   // Position et durée du morceau en cours, en secondes.
   D.times = function () { return [ePos(), eDur()]; };
   D.progress = function () { var d = eDur(); return d > 0 ? Math.min(1, ePos() / d) : 0; };
@@ -439,6 +456,52 @@
     if (on) bStart(rateK);
     try { au.pause(); } catch (e) {}
     emit();
+  }
+
+  // Détection du tempo d'un morceau décodé. Renvoie [bpm, instant en secondes d'un premier temps de mesure].
+  //  1. enveloppe des attaques (100 valeurs par seconde), basses renforcées : le kick porte le temps ;
+  //  2. autocorrélation pour trouver le tempo à peu près, entre 70 et 180 ;
+  //  3. peigne d'impulsions pour l'affiner au centième et trouver où tombent les temps ;
+  //  4. le temps 1 de la mesure est celui, parmi quatre, où les basses frappent le plus.
+  function tempoOf(buf) {
+    var sr = buf.sampleRate, d = buf.getChannelData(0), hop = Math.floor(sr / 100), n = Math.min(Math.floor(d.length / hop) - 1, 18000);
+    if (n < 800) return [B.cfg.midi.bpm, 0];
+    var env = new Float32Array(n), low = new Float32Array(n), a = Math.exp(-2 * Math.PI * 180 / sr * 2), lp = 0, pl = 0, pf = 0, i, k, x;
+    for (k = 0; k < n; k++) {
+      var el = 0, ef = 0, b0 = k * hop;
+      for (i = 0; i < hop; i += 2) { x = d[b0 + i]; lp = a * lp + (1 - a) * x; el += lp * lp; ef += x * x; }
+      el = Math.sqrt(el); ef = Math.sqrt(ef);
+      low[k] = Math.max(0, el - pl);
+      env[k] = low[k] + 0.5 * Math.max(0, ef - pf);
+      pl = el; pf = ef;
+    }
+    function ac(lag) {
+      var l0 = Math.floor(lag), fr = lag - l0, s = 0, q;
+      for (q = 0; q + l0 + 1 < n; q += 2) s += env[q] * (env[q + l0] * (1 - fr) + env[q + l0 + 1] * fr);
+      return s;
+    }
+    var best = 120, bs = -1, bpm, sc;
+    for (bpm = 70; bpm <= 180; bpm += 0.5) {
+      var L = 6000 / bpm, pr = Math.log(bpm / 125) / Math.LN2 / 0.7;
+      sc = (ac(L) + 0.5 * ac(2 * L)) * Math.exp(-0.5 * pr * pr);
+      if (sc > bs) { bs = sc; best = bpm; }
+    }
+    function comb(v) { // meilleur placement d'un peigne de période p : [score, phase]
+      var p = 6000 / v, top = -1, ph = 0, f, j, s2, at;
+      for (f = 0; f < p; f++) {
+        s2 = 0;
+        for (j = 0; (at = Math.round(f + j * p)) < n; j++) s2 += env[at];
+        if (s2 > top) { top = s2; ph = f; }
+      }
+      return [top, ph];
+    }
+    var fine = best, fs = -1, c;
+    for (bpm = best - 1.5; bpm <= best + 1.5; bpm += 0.02) { c = comb(bpm); if (c[0] > fs) { fs = c[0]; fine = bpm; } }
+    if (Math.abs(fine - Math.round(fine)) < 0.12) fine = Math.round(fine); // la plupart des morceaux ont un tempo rond
+    var p2 = 6000 / fine, phase = comb(fine)[1], sums = [0, 0, 0, 0], j2, at2;
+    for (j2 = 0; (at2 = Math.round(phase + j2 * p2)) < n; j2++) sums[j2 % 4] += low[at2];
+    var r = sums.indexOf(Math.max.apply(null, sums)), off = ((phase + r * p2) % (4 * p2)) / 100;
+    return [Math.round(fine * 100) / 100, Math.round(off * 1000) / 1000];
   }
 
   // Décodage : il sert à la fois à la lecture exacte et à la forme d'onde
@@ -486,6 +549,8 @@
         have[waveKey(t)] = 1;
         B.db.put('kv', waveKey(t), out)['catch'](function () {});
         if (wanted(t) && fits(t)) bufs[t.id] = buf;
+        // mode sync : le tempo est analysé une fois, au premier décodage, puis gardé avec les étiquettes
+        if (B.cfg.sync && !cfg().bpm[D.key(t)]) { try { cfg().bpm[D.key(t)] = tempoOf(buf); B.save(); } catch (e) {} }
         done(out);
       }
       try {

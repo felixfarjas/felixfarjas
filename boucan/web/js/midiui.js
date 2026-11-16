@@ -142,15 +142,29 @@
         var nt = [p.s, p.d, 1];
         v.n.push(nt);
         hit = { nt: nt, was: false, s: p.s, moved: false };
-        M.preview(pad, getVi(), p.d);
       }
       U.buzz();
       changed(); draw();
     }
+    // Colonne des noms : ligne touchée, ou -1.
+    function labelAt(x, y) {
+      var r = c.getBoundingClientRect(), row = Math.floor((y - r.top) / rowH());
+      return x - r.left < LAB && row >= 0 && row < rows() ? dOf(row) : -1;
+    }
+    // Renvoie vrai si le toucher a joué une note (colonne des noms) : il ne doit alors rien faire d'autre.
     function down(x, y) {
-      hit = null;
+      hit = null; pend = null;
+      var d = labelAt(x, y);
+      if (d >= 0) {
+        // on joue la note tout de suite, et si le clip tourne elle s'inscrit dans la boucle sur le pas le plus proche
+        var s = M.record(pad, getVi(), d);
+        U.buzz();
+        if (s >= 0) { changed(); draw(); }
+        return true;
+      }
       var p = cell(x, y);
       pend = p ? { x: x, y: y, p: p } : null;
+      return false;
     }
     // renvoie vrai si le geste appartient à la grille (il ne doit alors plus faire défiler la page)
     function move(x, y) {
@@ -180,7 +194,7 @@
       }
       hit = null;
     }
-    U.on(c, 'touchstart', function (ev) { down(ev.targetTouches[0].clientX, ev.targetTouches[0].clientY); });
+    U.on(c, 'touchstart', function (ev) { if (down(ev.targetTouches[0].clientX, ev.targetTouches[0].clientY)) ev.preventDefault(); });
     U.on(c, 'touchmove', function (ev) { if (ev.targetTouches[0] && move(ev.targetTouches[0].clientX, ev.targetTouches[0].clientY)) ev.preventDefault(); });
     U.on(c, 'touchend', function (ev) { if (pend || hit) ev.preventDefault(); up(); });
     U.on(c, 'touchcancel', function () { pend = null; hit = null; });
@@ -205,7 +219,7 @@
   // ====================== Éditeur d'un clip ======================
   X.edit = function (ref) {
     U = B.ui;
-    var pad = U.refGet(ref), vi = 0, bar = 0, raf = null, grid = null, tabs, panel, playB, playIco, playTxt, auto = false, lastOn = null;
+    var pad = U.refGet(ref), vi = 0, bar = 0, raf = null, grid = null, tabs, panel, playB, playIco, playTxt, auto = false, lastOn = null, bodyEl;
     if (!pad) return;
     if (!(pad.live instanceof Array)) pad.live = [];
     function saved() { M.touch(pad); B.save(); }
@@ -218,18 +232,15 @@
       playB.className = 'btn mdPlay' + (on ? ' on' : '');
     }
     function liveHas(v, k) { return pad.live.some(function (l) { return l[0] === v && l[1] === k; }); }
-
-    function rebuild() {
-      var v, I;
-      if (vi >= pad.voices.length) vi = pad.voices.length - 1;
-      if (bar >= pad.bars) bar = 0;
-      v = pad.voices[vi]; I = M.INST[v.inst];
-      tabs.innerHTML = ''; panel.innerHTML = '';
+    // Onglets des voix, avec sous chaque nom une croix pour la couper (muet).
+    function voiceTabs(withAdd) {
+      var box = U.h('div'), names = U.h('div', 'row tight'), mutes = U.h('div', 'row tight');
       pad.voices.forEach(function (x, k) {
-        U.add(tabs, btn(instName(x.inst), (k === vi ? 'on' : '') + (x.mute ? ' muted' : ''), function () { vi = k; rebuild(); }));
+        U.add(names, btn(instName(x.inst), (k === vi ? 'on' : '') + (x.mute ? ' muted' : ''), function () { vi = k; rebuild(); }));
+        U.add(mutes, btn('✕', 'cross' + (x.mute ? ' on' : ''), function () { x.mute = !x.mute; B.save(); rebuild(); }));
       });
-      if (pad.voices.length < M.MAX_VOICES) {
-        U.add(tabs, btn('+', 'more', function () {
+      if (withAdd && pad.voices.length < M.MAX_VOICES) {
+        U.add(names, btn('+', 'more', function () {
           X.pickInst('', false, function (id) {
             pad.voices.push(M.newVoice(id));
             vi = pad.voices.length - 1;
@@ -237,7 +248,20 @@
             saved(); rebuild();
           });
         }));
+        U.add(mutes, U.h('div', 'more'));
       }
+      mutes.style.marginTop = '4px';
+      return U.add(box, names, mutes);
+    }
+
+    function rebuild() {
+      var v, I, keep = bodyEl ? bodyEl.scrollTop : 0;
+      if (vi >= pad.voices.length) vi = pad.voices.length - 1;
+      if (bar >= pad.bars) bar = 0;
+      v = pad.voices[vi]; I = M.INST[v.inst];
+      tabs.innerHTML = ''; panel.innerHTML = '';
+      U.add(tabs, voiceTabs(true));
+
       // 1. les notes
       var seqBox = block(panel, t(I.kind === 'drum' ? 'mdDrums' : 'mdNotes'));
       if (pad.bars > 1) {
@@ -255,8 +279,8 @@
       U.add(seqBox, grid.el, acts, U.h('div', 'note', t(I.kind === 'drum' ? 'mdDrumsNote' : 'mdNotesNote')));
       setTimeout(grid.draw, 0);
 
-      // 2. l'instrument, et sa coupure temporaire juste à côté
-      var instB = btn(I.name + '  ▾', 'accent', function () {
+      // 2. l'instrument de la voix
+      block(panel, t('mdInst'), btn(I.name + '  ▾', 'accent', function () {
         X.pickInst(v.inst, false, function (id) {
           var kind = M.INST[id].kind !== I.kind;
           v.inst = id;
@@ -265,39 +289,42 @@
           if (kind) { M.generate(pad, vi); pad.live = pad.live.filter(function (l) { return l[0] !== vi; }); }
           saved(); rebuild();
         });
-      });
-      var muteB = btn(t('mdMute'), 'mute' + (v.mute ? ' on' : ''), function () {
-        v.mute = !v.mute;
-        muteB.className = 'btn mute' + (v.mute ? ' on' : '');
-        tabs.childNodes[vi].className = 'btn on' + (v.mute ? ' muted' : '');
-        B.save();
-      });
-      block(panel, t('mdInst'), U.add(U.h('div', 'row'), instB, muteB));
+      }));
 
-      block(panel, t('volume'), U.rangeS(function () { return v.vol; }, function (x) { v.vol = Math.round(x * 20) / 20; B.save(); },
+      // 3. réglages du son : on choisit la piste ici aussi, et on la coupe d'une croix
+      var snd = block(panel, t('mdMacros'), voiceTabs(false));
+      var vl = U.h('div', 'secLbl', t('volume'));
+      vl.style.marginTop = '10px';
+      U.add(snd, vl, U.rangeS(function () { return v.vol; }, function (x) { v.vol = Math.round(x * 20) / 20; B.save(); },
         function () { return Math.round(v.vol * 100) + ' %'; }));
       if (I.kind !== 'drum') {
-        block(panel, t('mdOct'), U.choice([[-1, '−1'], [0, '0'], [1, '+1']], v.oct || 0, function (o) { v.oct = o; B.save(); }));
+        var ol = U.h('div', 'secLbl', t('mdOct'));
+        ol.style.marginTop = '10px';
+        U.add(snd, ol, U.choice([[-1, '−1'], [0, '0'], [1, '+1']], v.oct || 0, function (o) { v.oct = o; B.save(); }));
       }
-      var mac = block(panel, t('mdMacros'));
-      macros(mac, v.inst, v.m, function () { B.save(); });
+      macros(snd, v.inst, v.m, function () { B.save(); });
 
-      // 3. ce que le glissé sur la case fait bouger : autant de réglages qu'on veut, sur toutes les voix
-      var liveBox = U.h('div', 'sw two');
-      var opts = I.macros.map(function (key, k) { return [k, t('mm.' + key)]; });
-      if (I.kind !== 'drum') opts.push([4, t('mdOct')]);
-      opts.forEach(function (o) {
-        var b = btn(o[1], liveHas(vi, o[0]) ? 'on' : '', function () {
-          if (liveHas(vi, o[0])) pad.live = pad.live.filter(function (l) { return !(l[0] === vi && l[1] === o[0]); });
-          else pad.live.push([vi, o[0]]);
-          b.className = 'btn' + (liveHas(vi, o[0]) ? ' on' : '');
-          B.save();
+      // 4. réglages au glissé : toutes les voix d'un coup, autant de réglages qu'on veut
+      var liveSec = block(panel, t('mdLive'), U.h('div', 'note', t('mdLiveNote')));
+      pad.voices.forEach(function (x, xi) {
+        var XI = M.INST[x.inst], box = U.h('div', 'sw two'), opts = XI.macros.map(function (key, k) { return [k, t('mm.' + key)]; });
+        if (XI.kind !== 'drum') opts.push([4, t('mdOct')]);
+        opts.forEach(function (o) {
+          var b = btn(o[1], liveHas(xi, o[0]) ? 'on' : '', function () {
+            if (liveHas(xi, o[0])) pad.live = pad.live.filter(function (l) { return !(l[0] === xi && l[1] === o[0]); });
+            else pad.live.push([xi, o[0]]);
+            b.className = 'btn' + (liveHas(xi, o[0]) ? ' on' : '');
+            B.save();
+          });
+          U.add(box, U.add(U.h('div'), b));
         });
-        U.add(liveBox, U.add(U.h('div'), b));
+        var nm = U.h('div', 'secLbl', XI.name);
+        nm.style.marginTop = '12px';
+        U.add(liveSec, nm, box);
       });
-      block(panel, t('mdLive'), liveBox, U.h('div', 'note', t('mdLiveNote')));
+
       if (pad.voices.length > 1) {
-        block(panel, '', btn(t('mdDelVoice'), 'danger', function () {
+        block(panel, '', btn(t('mdDelVoice', I.name), 'danger', function () {
           pad.voices.splice(vi, 1);
           // les réglages au glissé suivent la renumérotation des voix
           pad.live = pad.live.filter(function (l) { return l[0] !== vi; }).map(function (l) { return [l[0] > vi ? l[0] - 1 : l[0], l[1]]; });
@@ -305,38 +332,15 @@
           saved(); rebuild();
         }));
       }
+      if (bodyEl) bodyEl.scrollTop = keep;
     }
 
     U.sheet(t('mdClip'), function (body, sh) {
+      bodyEl = body;
       playB = U.h('button', 'btn mdPlay'); playIco = U.h('span', 'mdIco'); playTxt = U.h('span');
       U.add(playB, playIco, playTxt);
-      U.on(playB, 'click', function () { auto = false; M.toggle(pad, ref.pi, true); playLbl(); });
-      var dice = btn(t('mdGenAll'), '', function () {
-        M.newProg(pad);
-        pad.voices.forEach(function (x, k) { M.generate(pad, k); });
-        saved(); grid.draw();
-      });
-      U.sec(body, '', playB);
-      // longueur et précision côte à côte, sur une seule ligne : la grille reste visible sans défiler
-      var len = U.choice([[1, '1'], [2, '2'], [4, '4']], pad.bars, function (b) { M.setBars(pad, b); B.save(); rebuild(); });
-      var gr = U.choice([[8, '1/8'], [16, '1/16']], pad.steps, function (s) { M.setSteps(pad, s); B.save(); rebuild(); });
-      len.className = gr.className = 'row tight';
-      var two = U.add(U.h('div', 'row'), U.add(U.h('div'), U.h('div', 'secLbl', t('mdLen')), len), U.add(U.h('div'), U.h('div', 'secLbl', t('mdGrid')), gr));
-      U.sec(body, '', two);
-
-      tabs = U.h('div', 'row tight'); panel = U.h('div');
-      U.sec(body, t('mdVoices'), tabs, panel);
-
-      U.sec(body, t('mdGenAll'), dice, U.h('div', 'note', t('mdGenNote')));
-      U.sec(body, t('mdLayerSec'), U.check(t('mdLayer'), !!pad.layer, function (on) { M.stop(pad); pad.layer = on; B.save(); }),
-        U.h('div', 'note', t('mdLayerNote')));
-      var setB = btn('', '', function () { X.openSettings(function () { setLbl(); rebuild(); }); });
-      var setLbl = function () { setB.textContent = B.cfg.midi.bpm + ' BPM  ·  ' + M.KEYS[B.cfg.midi.root] + ' ' + t('sc.' + B.cfg.midi.scale); };
-      setLbl();
-      U.sec(body, t('mdSet'), setB, U.h('div', 'note', t('mdSetNote')));
-
-      U.sec(body, t('name'), U.field(pad.name, 24, function (v) { pad.name = v; B.save(); }));
-      U.sec(body, t('color'), U.swatches(pad.color, function (c) { pad.color = c; B.save(); if (grid) grid.draw(); }));
+      U.on(playB, 'click', function () { auto = false; M.toggle(pad, ref.pi); playLbl(); });
+      // dupliquer et « jouer en plus des autres » : juste sous le bouton lire
       var dup = btn(t('mdDup'), '', function () {
         // copie dans la première case libre : d'abord sur cette page, puis sur les suivantes
         var order = [ref.pi], k, done = false;
@@ -355,15 +359,43 @@
         if (!done) U.toast(t('mdNoRoom'), 3000);
         B.saveNow();
       });
-      var move = btn(t('move'), 'gap', function () { sh.close(); U.state.moving = { ref: ref, pad: pad }; U.renderAll(); });
+      var lay = U.check(t('mdLayer'), !!pad.layer, function (on) { pad.layer = on; B.save(); });
+      var two = U.add(U.h('div', 'row tight'), dup, lay);
+      two.style.marginTop = '8px';
+      U.sec(body, '', playB, two);
+
+      // longueur et précision côte à côte, sur une seule ligne
+      var len = U.choice([[1, '1'], [2, '2'], [4, '4']], pad.bars, function (b) { M.setBars(pad, b); B.save(); rebuild(); });
+      var gr = U.choice([[8, '1/8'], [16, '1/16']], pad.steps, function (s) { M.setSteps(pad, s); B.save(); rebuild(); });
+      len.className = gr.className = 'row tight';
+      U.sec(body, '', U.add(U.h('div', 'row'), U.add(U.h('div'), U.h('div', 'secLbl', t('mdLen')), len), U.add(U.h('div'), U.h('div', 'secLbl', t('mdGrid')), gr)));
+
+      tabs = U.h('div'); panel = U.h('div');
+      U.sec(body, t('mdVoices'), tabs, panel);
+
+      var dice = btn(t('mdGenAll'), '', function () {
+        M.newProg(pad);
+        pad.voices.forEach(function (x, k) { M.generate(pad, k); });
+        saved(); grid.draw();
+      });
+      U.sec(body, t('mdGenAll'), dice, U.h('div', 'note', t('mdGenNote')));
+      U.sec(body, t('mdLayerSec'), U.h('div', 'note', t('mdLayerNote')));
+      var setB = btn('', '', function () { X.openSettings(function () { setLbl(); rebuild(); }); });
+      var setLbl = function () { setB.textContent = B.cfg.midi.bpm + ' BPM  ·  ' + M.KEYS[B.cfg.midi.root] + ' ' + t('sc.' + B.cfg.midi.scale); };
+      setLbl();
+      U.sec(body, t('mdSet'), setB, U.h('div', 'note', t('mdSetNote')));
+
+      U.sec(body, t('name'), U.field(pad.name, 24, function (v) { pad.name = v; B.save(); }));
+      U.sec(body, t('color'), U.swatches(pad.color, function (c) { pad.color = c; B.save(); if (grid) grid.draw(); }));
+      var move = btn(t('move'), '', function () { sh.close(); U.state.moving = { ref: ref, pad: pad }; U.renderAll(); });
       var clear = btn(t('clear'), 'gap danger', function () {
         U.ask(t('askClear', pad.name || 'MIDI'), t('doClear'), function () { M.stop(pad); U.refSet(ref, null); sh.close(); });
       });
-      U.sec(body, t('padSec'), dup, move, clear);
+      U.sec(body, t('padSec'), move, clear);
 
       rebuild();
       // en ouvrant l'éditeur, le clip joue : on entend ce qu'on compose
-      if (!M.state(pad)) { M.toggle(pad, ref.pi, true); auto = true; }
+      if (!M.state(pad)) { M.toggle(pad, ref.pi); auto = true; }
       // tête de lecture sur la grille
       (function tick() {
         var st = M.stepOf(pad), col = st - bar * pad.steps;
@@ -383,66 +415,98 @@
 
   // ====================== Clavier ======================
   // Huit touches, toutes dans la gamme : aucune fausse note possible.
-  var NKEYS = 8;
+  // Par rangée : de la tonique à la tonique suivante (8 touches au plus). En
+  // deux rangées, celle du haut joue l'octave au-dessus.
+  var NKEYS = 16;
+  function layout(pad) {
+    var L = M.scale().length, per = Math.min(8, L + 1), rows = pad.rows === 2 ? 2 : 1;
+    return { L: L, per: per, rows: rows };
+  }
   X.keysDom = function () {
     U = B.ui;
-    var d = { el: U.h('div', 'kbd'), keys: [], pad: null, cur: {}, y0: {}, m0: {} }, k;
-    for (k = 0; k < NKEYS; k++) { d.keys.push(U.h('div', 'key')); U.add(d.el, d.keys[k]); }
-    function keyAt(x) {
-      var r = d.el.getBoundingClientRect();
-      return Math.max(0, Math.min(NKEYS - 1, Math.floor((x - r.left) / r.width * NKEYS)));
+    var d = { el: U.h('div', 'kbd'), keys: [], pad: null, cur: {}, y0: {}, m0: {}, lay: '' }, k;
+    for (k = 0; k < NKEYS; k++) { d.keys.push(U.add(U.h('div', 'key'), U.h('span'))); U.add(d.el, d.keys[k]); }
+    // touche sous le doigt : numéro de l'élément, ou -1
+    function keyAt(x, y) {
+      var r = d.el.getBoundingClientRect(), g = layout(d.pad);
+      var col = Math.max(0, Math.min(g.per - 1, Math.floor((x - r.left) / r.width * g.per)));
+      var row = Math.max(0, Math.min(g.rows - 1, Math.floor((y - r.top) / r.height * g.rows)));
+      return row * g.per + col;
     }
     function lit() {
       var on = {}, id;
       for (id in d.cur) on[d.cur[id]] = 1;
       d.keys.forEach(function (e, i) { var c = e.base + (on[i] ? ' down' : ''); if (e.className !== c) e.className = c; });
     }
-    // le doigt monte ou descend : les réglages choisis suivent, et le filtre de la note tenue avec
+    // le doigt monte ou descend : les réglages cochés suivent (jauge à l'appui), et le filtre de la note tenue avec
     function bend(id, y) {
-      if (d.y0[id] === undefined || !d.pad || !(d.pad.live || []).length) return;
-      var dv = (d.y0[id] - y) / 110;
+      var p = d.pad, live = p && p.live || [];
+      if (d.y0[id] === undefined || !live.length) return;
+      var dv = (d.y0[id] - y) / 110, I = M.INST[p.inst];
       if (Math.abs(dv) < 0.08 && !d.bent) return;
       d.bent = true;
-      d.pad.live.forEach(function (k) { d.pad.m[k] = Math.round(Math.max(0, Math.min(1, d.m0[id][k] + dv)) * 100) / 100; });
-      M.keyBend(d.pad);
+      live.forEach(function (k2) { p.m[k2] = Math.round(Math.max(0, Math.min(1, d.m0[id][k2] + dv)) * 100) / 100; });
+      M.keyBend(p);
+      U.gauge(d.el.getBoundingClientRect(), '#FDD835', p.m[live[0]], Math.round(p.m[live[0]] * 100) + ' %',
+        live.map(function (k2) { return t('mm.' + I.macros[k2]); }).join(' + '));
     }
     function start(id, x, y) {
       if (!d.pad || U.state.edit) return;
-      var k2 = keyAt(x);
-      if (d.cur[id] === undefined && typeof y === 'number') { d.y0[id] = y; d.m0[id] = d.pad.m.slice(); }
+      var k2 = keyAt(x, y), first = d.cur[id] === undefined;
+      if (first) { d.y0[id] = y; d.m0[id] = d.pad.m.slice(); }
       if (d.cur[id] === k2) return;
       d.cur[id] = k2;
-      M.keyOn(d.pad, d.pad.id + ':' + id, k2);
+      M.keyOn(d.pad, d.pad.id + ':' + id, d.keys[k2].n);
       lit();
     }
     function stop(id) {
       if (d.cur[id] === undefined) return;
       delete d.cur[id]; delete d.y0[id]; delete d.m0[id];
-      if (d.bent) { d.bent = false; B.save(); }
       if (d.pad) M.keyOff(d.pad.id + ':' + id);
+      var left = false, q;
+      for (q in d.cur) left = true;
+      if (d.bent && !left) { d.bent = false; U.gaugeHide(); B.save(); }
       lit();
     }
     function each(ev, fn) { for (var i = 0; i < ev.changedTouches.length; i++) fn(ev.changedTouches[i]); }
     U.on(d.el, 'touchstart', function (ev) { if (!U.state.edit) ev.preventDefault(); each(ev, function (tc) { start(tc.identifier, tc.clientX, tc.clientY); }); });
-    // glisser d'une touche à l'autre joue les notes au passage
-    U.on(d.el, 'touchmove', function (ev) { if (!U.state.edit) ev.preventDefault(); each(ev, function (tc) { if (d.cur[tc.identifier] !== undefined) { start(tc.identifier, tc.clientX); bend(tc.identifier, tc.clientY); } }); });
+    // glisser d'une touche à l'autre joue les notes au passage ; monter ou descendre règle le son
+    U.on(d.el, 'touchmove', function (ev) {
+      if (!U.state.edit) ev.preventDefault();
+      each(ev, function (tc) {
+        if (d.cur[tc.identifier] === undefined) return;
+        bend(tc.identifier, tc.clientY);
+        start(tc.identifier, tc.clientX, d.bent || layout(d.pad).rows === 1 ? d.y0[tc.identifier] : tc.clientY);
+      });
+    });
     var end = function (ev) { each(ev, function (tc) { stop(tc.identifier); }); };
     U.on(d.el, 'touchend', end);
     U.on(d.el, 'touchcancel', end);
-    U.on(d.el, 'mousedown', function (ev) { start('m', ev.clientX); });
+    U.on(d.el, 'mousedown', function (ev) { start('m', ev.clientX, ev.clientY); });
     U.on(window, 'mouseup', function () { stop('m'); });
     return d;
   };
   X.keysPaint = function (d, pad) {
     d.pad = pad;
     if (!(pad.live instanceof Array)) pad.live = [0];
-    d.keys.forEach(function (e, k) {
-      e.base = 'key' + (M.isRoot(k) ? ' root' : '');
-      if (e.shown !== M.noteName(k)) { e.shown = M.noteName(k); e.textContent = e.shown; }
+    var g = layout(pad), sig = g.per + 'x' + g.rows;
+    d.keys.forEach(function (e, i) {
+      var row = Math.floor(i / g.per), col = i % g.per, shown = i < g.per * g.rows;
+      // deux rangées : celle du haut (première) joue l'octave au-dessus
+      e.n = col + (g.rows === 2 && row === 0 ? g.L : 0);
+      if (d.lay !== sig) {
+        e.style.display = shown ? '' : 'none';
+        e.style.left = (col * 100 / g.per) + '%'; e.style.width = (100 / g.per) + '%';
+        e.style.top = (row * 100 / g.rows) + '%'; e.style.height = (100 / g.rows) + '%';
+      }
+      if (!shown) return;
+      e.base = 'key' + (M.isRoot(e.n) ? ' root' : '');
+      if (e.shown !== M.noteName(e.n)) { e.shown = M.noteName(e.n); e.firstChild.textContent = e.shown; }
       if (e.className.indexOf('down') < 0) e.className = e.base;
     });
+    d.lay = sig;
   };
-  X.newKeys = function () { return { inst: 'pluck', vol: 0.8, oct: 0, m: M.INST.pluck.def.slice(), live: [0] }; };
+  X.newKeys = function () { return { inst: 'pluck', vol: 0.8, oct: 0, rows: 1, m: M.INST.pluck.def.slice(), live: [0] }; };
 
   X.editKeys = function (ref) {
     U = B.ui;
@@ -474,6 +538,8 @@
       });
       U.sec(body, t('mdInst'), instB, U.h('div', 'note', t('keysNote')));
       U.sec(body, t('mdOct'), U.choice([[-1, '−1'], [0, '0'], [1, '+1']], pad.oct || 0, function (o) { pad.oct = o; B.save(); }));
+      U.sec(body, t('keysRows'), U.choice([[1, t('keysRow1')], [2, t('keysRow2')]], pad.rows === 2 ? 2 : 1, function (r) { pad.rows = r; B.save(); U.renderAll(); }),
+        U.h('div', 'note', t('keysRowsNote')));
       U.sec(body, t('volume'), U.rangeS(function () { return pad.vol; }, function (x) { pad.vol = Math.round(x * 20) / 20; B.save(); },
         function () { return Math.round(pad.vol * 100) + ' %'; }));
       U.sec(body, t('mdMacros'), mac);

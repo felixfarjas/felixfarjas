@@ -314,10 +314,10 @@
     return k;
   }
   // m : macros du kit [kick, hauteur, durée, saturation]
-  function drumHit(c, kit, lane, t, vel, m) {
+  function drumHit(c, kit, lane, t, vel, m, pk) {
     var b = kit[lane];
     if (!b) return;
-    var x = ctx(), s = x.createBufferSource(), g = x.createGain(), rate = Math.pow(2, (m[1] - 0.5) * (lane === 0 ? 0.6 : 1.2));
+    var x = ctx(), s = x.createBufferSource(), g = x.createGain(), rate = Math.pow(2, (m[1] - 0.5) * (lane === 0 ? 0.6 : 1.2)) * (pk || 1);
     s.buffer = b;
     s.playbackRate.value = rate;
     // chaque élément à sa place dans le mix : le kick devant, les cymbales derrière
@@ -335,13 +335,31 @@
   }
 
   // ====================== Horloge ======================
-  // Un « tick » = une double croche. Toutes les pages partagent la même horloge.
-  var active = {};  // id de case -> { pad, page, start (tick de départ) }
-  var queued = {};  // page -> { pad, at (tick) } : clip en attente de la fin du clip en cours
+  // Un « tick » = une double croche. L'horloge est commune à tout : un clip
+  // qu'on lance entre aussitôt, à l'endroit de la mesure où en est l'horloge.
+  // En mode sync, elle se cale sur le tempo et les temps de la musique du lecteur.
+  var active = {};  // id de case -> { pad, page }
   var maps = {};    // id de case -> pour chaque voix, notes rangées par pas
-  var timer = null, nextTick = 0, nextTime = 0, lastTick = 0, lastTime = 0;
+  var timer = null, nextTick = 0, nextTime = 0, lastTick = 0, lastTime = 0, lastRun = 0;
+  var bpmNow = 0, bk = 1, bkOn = false, bkTime = 0.9;
 
-  function tickDur() { return 60 / cf().bpm / 4; }
+  // Tempo en vigueur : celui du réglage, ou celui de la musique en mode sync.
+  M.bpm = function () { return bpmNow || cf().bpm; };
+  // Musique du lecteur sur laquelle se caler (mode sync), ou null.
+  function music() { return B.cfg && B.cfg.sync && B.deck && B.deck.beat ? B.deck.beat() : null; }
+  // Fait glisser le tempo vers sa cible : vite quand une musique donne le tempo,
+  // en 3 secondes environ quand on revient au tempo réglé.
+  function tempo(dt) {
+    var m = music(), target = m ? m.bpm * m.rate : cf().bpm;
+    if (!bpmNow || dt <= 0) bpmNow = target;
+    else bpmNow += (target - bpmNow) * (1 - Math.exp(-dt / (m || M.locked ? 0.12 : 1)));
+    if (Math.abs(target - bpmNow) < 0.02) bpmNow = target;
+    M.locked = !!m;
+    return m;
+  }
+  function tickDur() { return 60 / M.bpm() / 4 / Math.max(0.05, bk); }
+  // Hauteur à appliquer aux notes : effet PITCH et vinyl stop.
+  function pitch() { return (A.target !== 'music' ? A.pitchK || 1 : 1) * bk; }
   function change(id) { if (A.onChange) A.onChange(id); }
   // à appeler après toute modification des notes d'un clip
   M.touch = function (pad) { delete maps[pad.id]; };
@@ -356,108 +374,122 @@
     return m;
   }
   function playStep(pad, step, tt, sd) {
-    var mp = mapOf(pad);
+    var mp = mapOf(pad), pk = pitch();
     pad.voices.forEach(function (v, vi) {
       var list = mp[vi] && mp[vi][step], I = M.INST[v.inst], k;
       if (!list || v.mute || !I) return;
       var c = chan(pad.id + ':' + vi, v.vol, I.drive(v.m));
       if (I.kind === 'drum') {
         var kit = kitOf(v.inst);
-        for (k = 0; k < list.length; k++) drumHit(c, kit, list[k][1], tt, list[k][1] === 3 && step % 2 ? 0.6 : 1, v.m);
+        for (k = 0; k < list.length; k++) drumHit(c, kit, list[k][1], tt, list[k][1] === 3 && step % 2 ? 0.6 : 1, v.m, pk);
       } else {
         var P = I.patch(v.m);
-        for (k = 0; k < list.length; k++) noteOn(c, P, M.freq(list[k][1], I.oct + (v.oct || 0)), tt, list[k][2] * sd * 0.92, 0.9);
+        for (k = 0; k < list.length; k++) noteOn(c, P, M.freq(list[k][1], I.oct + (v.oct || 0)) * pk, tt, list[k][2] * sd * 0.92, 0.9);
       }
     });
   }
+  function posOf(pad, g) { var len = pad.bars * 16; return ((g % len) + len) % len; }
   function schedule(g, tt) {
     for (var id in active) {
-      var a = active[id], pad = a.pad, k = g - a.start, st = 16 / pad.steps;
-      if (k < 0) continue;
-      var pos = k % (pad.bars * 16);
+      var pad = active[id].pad, st = 16 / pad.steps, pos = posOf(pad, g);
       if (pos % st === 0) playStep(pad, pos / st, tt, st * tickDur());
     }
   }
-  function later(id, at) { setTimeout(function () { change(id); }, Math.max(0, (at - ctx().currentTime) * 1000)); }
   function run() {
-    var now = ctx().currentTime, ahead = document.hidden ? 1.5 : 0.14, pg, id;
-    if (nextTime < now - 0.25) nextTime = now + 0.02; // l'horloge a été gelée (appli en arrière-plan) : on repart d'ici
+    var now = ctx().currentTime, ahead = document.hidden ? 1.5 : 0.14, dt = lastRun ? now - lastRun : 0, m;
+    lastRun = now;
+    m = tempo(dt);
+    // vinyl stop : l'horloge freine avec le son, puis repart
+    if (bkOn) bk = Math.max(0.02, bk - dt / bkTime); else if (bk < 1) bk = Math.min(1, bk + dt / 0.35);
+    if (bk < 0.06) { nextTime = now + 0.03; return; }
+    if (m && m.rate > 0.3 && bk === 1) {
+      // calage sur la musique : la position dans le morceau donne le temps exact de chaque tick
+      var td = 60 / (m.bpm * m.rate) / 4, mt = (m.pos - m.off) / (60 / m.bpm) * 4, ideal = now + (nextTick - mt) * td;
+      // saut dans le morceau, autre morceau, premier calage : on se replace d'un coup
+      if (ideal < now - 0.03 || ideal > now + ahead + td * 1.6) { nextTick = Math.ceil(mt + 0.03 / td); ideal = now + (nextTick - mt) * td; }
+      nextTime = ideal;
+    } else if (nextTime < now - 0.25) nextTime = now + 0.02; // l'horloge a été gelée (appli en arrière-plan) : on repart d'ici
     while (nextTime < now + ahead) {
-      for (pg in queued) {
-        if (queued[pg].at > nextTick) continue;
-        var q = queued[pg];
-        delete queued[pg];
-        // un clip exclusif remplace celui de sa page ; un clip « en plus » ne coupe personne
-        if (!q.pad.layer) for (id in active) if (active[id].page === q.page && !active[id].pad.layer) { delete active[id]; dropChans(id); later(id, nextTime); }
-        active[q.pad.id] = { pad: q.pad, page: q.page, start: q.at };
-        later(q.pad.id, nextTime);
-      }
-      schedule(nextTick, nextTime + (nextTick % 2 ? cf().swing * tickDur() * 0.5 : 0));
+      schedule(nextTick, nextTime + (((nextTick % 2) + 2) % 2 ? cf().swing * tickDur() * 0.5 : 0));
       lastTick = nextTick; lastTime = nextTime;
       nextTick++;
       nextTime += tickDur();
     }
   }
   function any(o) { for (var k in o) return true; return false; }
-  function halt() { if (timer) { clearInterval(timer); timer = null; } }
+  function halt() { if (timer) { clearInterval(timer); timer = null; lastRun = 0; } }
 
-  M.state = function (pad) {
-    if (active[pad.id]) return 'on';
-    for (var pg in queued) if (queued[pg].pad === pad) return 'queued';
-    return '';
-  };
+  M.state = function (pad) { return active[pad.id] ? 'on' : ''; };
   // Début et durée de la boucle en cours (pour la barre de progression de la case).
   M.info = function (pad) {
-    var a = active[pad.id];
-    if (!a) return null;
-    var len = pad.bars * 16, k = lastTick - a.start, td = tickDur();
-    return { t0: lastTime - (k >= 0 ? k % len : k) * td, dur: len * td, loop: true };
+    if (!active[pad.id]) return null;
+    var td = tickDur();
+    return { t0: lastTime - posOf(pad, lastTick) * td, dur: pad.bars * 16 * td, loop: true };
   };
   // Pas en cours de lecture dans le clip, ou -1.
   M.stepOf = function (pad) {
-    var a = active[pad.id], k = lastTick - (a ? a.start : 0);
-    if (!a || k < 0) return -1;
-    return Math.floor((k % (pad.bars * 16)) / (16 / pad.steps));
+    if (!active[pad.id]) return -1;
+    return Math.floor(posOf(pad, lastTick) / (16 / pad.steps));
   };
   M.stop = function (pad) {
-    var pg;
-    for (pg in queued) if (queued[pg].pad === pad) delete queued[pg];
     if (active[pad.id]) { delete active[pad.id]; dropChans(pad.id); }
-    if (!any(active) && !any(queued)) halt();
+    if (!any(active)) halt();
     change(pad.id);
   };
-  // Lance ou arrête un clip. Un seul clip exclusif joue par page : le nouveau
-  // attend la fin de celui qui tourne. Un clip réglé « en plus des autres »
-  // (pad.layer) part sur la prochaine mesure sans rien couper.
-  // now : démarrage immédiat, sans attendre (écoute dans l'éditeur).
-  M.toggle = function (pad, page, now) {
-    var id, cur = null, key = pad.layer ? 'L' + pad.id : String(page);
-    if (active[pad.id] || M.state(pad) === 'queued') { M.stop(pad); return; }
+  // Lance ou arrête un clip. Il entre tout de suite, calé sur l'horloge. Un clip
+  // exclusif remplace celui de sa page ; un clip réglé « en plus des autres »
+  // (pad.layer) s'ajoute sans rien couper.
+  M.toggle = function (pad, page) {
+    var id;
+    if (active[pad.id]) { M.stop(pad); return; }
     A.resume(); A.unkill();
-    if (!pad.layer) for (id in active) if (active[id].page === page && !active[id].pad.layer) cur = active[id];
+    if (!pad.layer) for (id in active) if (active[id].page === page && !active[id].pad.layer) { delete active[id]; dropChans(id); change(id); }
+    active[pad.id] = { pad: pad, page: page };
     if (!timer) {
+      // premier clip : il part du début (ou, en mode sync, de l'endroit où en est la musique)
       nextTick = 0; nextTime = ctx().currentTime + 0.05;
-      lastTick = 0; lastTime = nextTime;
-      active[pad.id] = { pad: pad, page: page, start: 0 };
+      lastTick = 0; lastTime = nextTime; lastRun = 0;
+      bk = 1; bkOn = false;
       timer = setInterval(run, 25);
       run();
-    } else if (now) {
-      queued[key] = { pad: pad, page: page, at: nextTick };
-    } else if (cur) {
-      var len = cur.pad.bars * 16;
-      queued[key] = { pad: pad, page: page, at: cur.start + Math.ceil(Math.max(1, nextTick - cur.start) / len) * len };
-    } else {
-      queued[key] = { pad: pad, page: page, at: Math.ceil(nextTick / 16) * 16 };
     }
     change(pad.id);
   };
   M.stopAll = function () {
-    var ids = Object.keys(active), pg;
-    for (pg in queued) ids.push(queued[pg].pad.id);
-    active = {}; queued = {};
+    var ids = Object.keys(active);
+    active = {};
     halt();
     ids.forEach(function (id) { dropChans(id); change(id); });
     for (var k in held) { if (held[k]) held[k].off(ctx().currentTime); delete held[k]; }
+  };
+  // Effet vinyl stop sur les clips.
+  M.brake = function (on, time) { bkOn = on; bkTime = time || 0.9; };
+  // Tenu à jour une fois par seconde quand aucun clip ne joue : les effets calés sur le tempo suivent la musique.
+  M.poll = function () {
+    var before = M.bpm();
+    if (!timer) tempo(music() || !bpmNow ? 0 : 1);
+    if (Math.abs(M.bpm() - before) > 0.3 && A.refx) A.refx();
+  };
+  // Durée (secondes) ramenée à la division du temps la plus proche : 1/4, 1/3, 1/2, 3/4, 1, 2 temps.
+  M.div = function (sec, max) {
+    var beat = 60 / M.bpm(), best = sec, err = 1e9;
+    [0.25, 1 / 3, 0.5, 0.75, 1, 2].forEach(function (f) {
+      var v = beat * f, e = Math.abs(Math.log(v / sec));
+      if (v <= (max || 1e9) && e < err) { err = e; best = v; }
+    });
+    return best;
+  };
+  // Fréquence (Hz) ramenée à un multiple du temps : 1/2, 1, 2, 4 ou 8 par temps.
+  M.rateQ = function (hz) {
+    var bps = M.bpm() / 60, best = hz, err = 1e9;
+    [0.5, 1, 2, 4, 8].forEach(function (f) { var e = Math.abs(Math.log(bps * f / hz)); if (e < err) { err = e; best = bps * f; } });
+    return best;
+  };
+  // Instant du prochain temps de l'horloge (pour caler le hachoir), ou 0 si elle ne tourne pas.
+  M.nextBeat = function () {
+    if (!timer) return 0;
+    var k = ((nextTick % 4) + 4) % 4;
+    return nextTime + (k ? 4 - k : 0) * tickDur();
   };
   M.playing = function () { return !!timer; };
 
@@ -465,8 +497,21 @@
   M.preview = function (pad, vi, d) {
     var v = pad.voices[vi], I = M.INST[v.inst], c = chan(pad.id + ':' + vi, v.vol, I.drive(v.m)), t = ctx().currentTime + 0.01;
     A.resume(); A.unkill();
-    if (I.kind === 'drum') drumHit(c, kitOf(v.inst), d, t, 1, v.m);
+    if (I.kind === 'drum') drumHit(c, kitOf(v.inst), d, t, 1, v.m, 1);
     else noteOn(c, I.patch(v.m), M.freq(d, I.oct + (v.oct || 0)), t, 0.25, 0.9);
+  };
+  // Joue une note à la main et, si le clip tourne, l'inscrit dans la boucle sur
+  // le pas le plus proche (jeu en direct, quantifié). Renvoie le pas, ou -1.
+  M.record = function (pad, vi, d) {
+    var info = M.info(pad), v = pad.voices[vi], total = pad.bars * pad.steps, s, k;
+    M.preview(pad, vi, d);
+    if (!info) return -1;
+    s = Math.round((ctx().currentTime - info.t0) / ((16 / pad.steps) * tickDur()));
+    s = ((s % total) + total) % total;
+    for (k = 0; k < v.n.length; k++) if (v.n[k][0] === s && v.n[k][1] === d) return s;
+    v.n.push([s, d, 1]);
+    M.touch(pad);
+    return s;
   };
 
   // ====================== Clavier (widget) ======================
@@ -475,7 +520,7 @@
     var I = M.INST[pad.inst] || M.INST.pluck;
     A.resume(); A.unkill();
     M.keyOff(key);
-    held[key] = noteOn(chan(pad.id + ':k', pad.vol, I.drive(pad.m)), I.patch(pad.m), M.freq(n, I.oct + (pad.oct || 0)), ctx().currentTime, null, 0.9);
+    held[key] = noteOn(chan(pad.id + ':k', pad.vol, I.drive(pad.m)), I.patch(pad.m), M.freq(n, I.oct + (pad.oct || 0)) * pitch(), ctx().currentTime, null, 0.9);
   };
   // Les réglages du clavier ont bougé pendant qu'on joue : le filtre des notes tenues suit le doigt.
   M.keyBend = function (pad) {
