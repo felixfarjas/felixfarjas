@@ -373,6 +373,7 @@
     // onde du morceau : glisser dessus pour avancer ou reculer
     function seekAt(x) {
       var r = d.wave.getBoundingClientRect();
+      d.seekHold = 0;
       d.seekF = Math.max(0, Math.min(1, (x - r.left) / r.width));
       waveDraw(d);
     }
@@ -447,6 +448,75 @@
     row.style.boxShadow = c ? 'inset 5px 0 0 ' + c : '';
     if (row.note) row.note.textContent = B.cfg.deck.notes[k] || '';
   }
+  function mmss(sec) {
+    var m = Math.floor(sec / 60), s = sec - m * 60;
+    return m + ':' + (s < 10 ? '0' : '') + s.toFixed(1);
+  }
+  // Point de départ d'un morceau : on le pose sur l'onde ; doigt immobile, l'onde zoome (x5).
+  function cueEditor(body, track, key) {
+    var D = B.deck, dur = (track.ms || 0) / 1000;
+    if (!(dur > 1)) return;
+    var cu = { s: D.cue(track).s, f: D.cue(track).f }, wave = null, v0 = 0, v1 = dur, zoomed = false, holdT = null, lastX = 0, sx = 0, down = false;
+    var c = h('canvas', 'wave cue'), lbl = h('div', 'note'), dpr = window.devicePixelRatio || 1;
+    function store() {
+      if (cu.s < 0.05 && !cu.f) delete B.cfg.deck.cues[key]; else B.cfg.deck.cues[key] = { s: Math.round(cu.s * 100) / 100, f: cu.f };
+      B.save();
+    }
+    function draw() {
+      var W = c.width = Math.max(50, Math.floor(c.clientWidth * dpr)), H = c.height = Math.max(20, Math.floor(c.clientHeight * dpr));
+      var g = c.getContext('2d'), nb = Math.floor(c.clientWidth / 3), k;
+      g.fillStyle = '#161616'; g.fillRect(0, 0, W, H);
+      for (k = 0; k < nb; k++) {
+        var tm = v0 + (k + 0.5) / nb * (v1 - v0), lv = 0.15;
+        if (wave) lv = Math.max(0.05, wave[Math.min(wave.length - 1, Math.floor(tm / dur * wave.length))] / 255);
+        g.fillStyle = tm >= cu.s ? '#fff' : '#555';
+        g.fillRect(k * 3 * dpr, (1 - lv) * H / 2, 2 * dpr, Math.max(dpr, lv * H));
+      }
+      var x = (cu.s - v0) / (v1 - v0) * W;
+      g.fillStyle = '#FDD835';
+      g.fillRect(x - 1.5 * dpr, 0, 3 * dpr, H); g.fillRect(x, 0, 14 * dpr, 14 * dpr);
+      if (zoomed) { g.font = 'bold ' + Math.round(12 * dpr) + 'px sans-serif'; g.textAlign = 'center'; g.fillText('ZOOM \u00d75', W / 2, 15 * dpr); }
+      lbl.textContent = t('cueAt', mmss(cu.s));
+    }
+    function frac(x) { var r = c.getBoundingClientRect(); return Math.max(0, Math.min(1, (x - r.left) / r.width)); }
+    function put(x) { cu.s = Math.max(0, Math.min(dur - 1, v0 + frac(x) * (v1 - v0))); draw(); }
+    function zoomIn() {
+      holdT = null;
+      if (!down || zoomed) return;
+      var span = dur / 5;
+      v0 = Math.max(0, Math.min(dur - span, cu.s - frac(lastX) * span)); v1 = v0 + span;
+      zoomed = true; buzz(); draw();
+    }
+    function arm(x) { sx = lastX = x; if (holdT) clearTimeout(holdT); holdT = zoomed ? null : setTimeout(zoomIn, 380); }
+    function start(x) { down = true; put(x); arm(x); }
+    function move(x) { if (!down) return; lastX = x; if (Math.abs(x - sx) > 5) arm(x); put(x); }
+    function end() {
+      if (!down) return;
+      down = false;
+      if (holdT) { clearTimeout(holdT); holdT = null; }
+      if (zoomed) { zoomed = false; v0 = 0; v1 = dur; }
+      draw(); store();
+    }
+    on(c, 'touchstart', function (ev) { ev.preventDefault(); start(ev.targetTouches[0].clientX); });
+    on(c, 'touchmove', function (ev) { ev.preventDefault(); if (ev.targetTouches[0]) move(ev.targetTouches[0].clientX); });
+    on(c, 'touchend', end); on(c, 'touchcancel', end);
+    on(c, 'mousedown', function (ev) { start(ev.clientX); end(); });
+    var zero = h('button', 'btn', t('cueZero')), play = h('button', 'btn accent', '');
+    function playLbl() { play.textContent = t(D.track === track && D.wanted() ? 'pause' : 'cuePlay'); }
+    on(zero, 'click', function () { cu.s = 0; draw(); store(); });
+    on(play, 'click', function () {
+      if (D.track === track && D.wanted()) D.pause(); else D.play(track);
+      playLbl();
+    });
+    playLbl();
+    var row = add(h('div', 'row'), zero, play);
+    row.style.marginTop = '8px';
+    sec(body, t('cueSec'), c, lbl, row, h('div', 'note', t('cueNote')));
+    sec(body, t('fadeIn'), rangeS(function () { return cu.f / 5; }, function (v) { cu.f = Math.round(v * 50) / 10; store(); },
+      function () { return cu.f ? cu.f.toFixed(1) + ' s' : t('none'); }));
+    setTimeout(draw, 0);
+    D.waveOf(track).then(function (w) { if (w && w.length) { wave = w; draw(); } })['catch'](function () {});
+  }
   // Appui long sur un morceau : sa couleur et un court commentaire.
   function openColor(track) {
     if (!track) return;
@@ -463,6 +533,7 @@
       sec(body, t('trackNote'), field(B.cfg.deck.notes[key] || '', 16, function (v) {
         if (v) B.cfg.deck.notes[key] = v; else delete B.cfg.deck.notes[key];
       }), h('div', 'note', t('trackNoteHelp')));
+      cueEditor(body, track, key);
       var none = h('button', 'btn gap', t('noColor'));
       function set(c) { if (c) B.cfg.deck.colors[key] = c; else delete B.cfg.deck.colors[key]; refresh(); sh.close(); }
       on(none, 'click', function () { set(''); });
@@ -643,6 +714,7 @@
         var ok = pcm && pcm.length > A.ctx.sampleRate * 0.15;
         // la musique reste baissée jusqu'à la fin de la voix rejouée
         duck(false, ok && pad.micMode !== 'live' ? pcm.length / A.ctx.sampleRate + 0.3 : 0);
+        if (ok && pad.enhance) pcm = B.enhance(pcm, A.ctx.sampleRate);
         if (ok) A.play(pad, undefined, A.pcmBuffer(pcm));
       }
     });
@@ -1591,6 +1663,7 @@
       return A.load(pad.rawSample).then(function (raw) {
         if (!raw) return;
         var out = B.denoise(raw.getChannelData(0), raw.sampleRate, pad.denoise || 0);
+        if (pad.enhance) out = B.enhance(out, raw.sampleRate);
         return A.storeBuffer(A.pcmBuffer(out, raw.sampleRate)).then(function (r) {
           var first = !pad.sample;
           pad.sample = r.id;
@@ -1643,6 +1716,7 @@
         }), mh);
         sec(body, t('denoiser'), range01('', function () { return pad.denoise; }, function (v) { pad.denoise = Math.round(v * 20) / 20; B.save(); },
           function () { return Math.round(pad.denoise * 100) + ' %'; }), h('div', 'note', t('denoiseNote')));
+        sec(body, '', check(t('enhance'), !!pad.enhance, function (v) { pad.enhance = v; B.save(); }), h('div', 'note', t('enhanceMicNote')));
         volume(body);
       } else if (type === 'fx') {
         var grid = h('div', 'sw two'), fxBtns = [];
@@ -1729,6 +1803,10 @@
             if (denT) clearTimeout(denT);
             denT = setTimeout(function () { denT = null; reprocess()['catch'](function () {}); }, 350);
           }, function () { return Math.round((pad.denoise || 0) * 100) + ' %'; }), h('div', 'note', t('denoiseNote')));
+          sec(body, '', check(t('enhance'), !!pad.enhance, function (v) {
+            pad.enhance = v; halt();
+            reprocess()['catch'](function () {});
+          }), h('div', 'note', t('enhanceNote')));
         }
 
         var fades = function (key) {
@@ -1852,11 +1930,13 @@
   }
 
   // withMusic : joindre aussi les morceaux du dossier source du lecteur.
-  function doExport(action, withMusic) {
-    var music = withMusic ? B.deck.exportList() : [];
+  // withMusic : joindre aussi les morceaux du dossier source du lecteur.
+  // tagsOnly : seulement les couleurs, commentaires et points de départ des morceaux.
+  function doExport(action, withMusic, tagsOnly) {
+    var music = withMusic && !tagsOnly ? B.deck.exportList() : [];
     busy(t('makingFile'));
     setTimeout(function () {
-      (NATIVE ? B.nativeExport(action, music, function (k, n) { busy(t('exMusic') + ' ' + k + '/' + n); }) : B.webExport()).then(function () {
+      (NATIVE ? B.nativeExport(action, music, function (k, n) { busy(t('exMusic') + ' ' + k + '/' + n); }, tagsOnly) : B.webExport(tagsOnly)).then(function () {
         if (!NATIVE) { idle(); toast(t('downloaded')); }
       }, function (e) {
         idle();
@@ -1870,6 +1950,13 @@
       busy(t('readingFile'));
       B.readExport(f).then(function (parsed) {
         idle();
+        if (parsed.tags) {
+          // fichier d'étiquettes seules : on les fusionne, le reste de la config ne bouge pas
+          ask(t('askTags'), t('doTags'), function () {
+            B.applyTags(parsed.tags).then(function (n) { B.deck.load(); closeSheets(); renderAll(); toast(t('tagsDone', n), 3000); });
+          });
+          return;
+        }
         ask(t('askImport') + (parsed.music.length ? ' ' + t('askImportMusic', parsed.music.length) : ''), t('doImport'), function () {
           busy(t('importingCfg'));
           B.applyImport(parsed).then(function () {
@@ -1913,11 +2000,13 @@
         sec(body, t('transfer'), exChk,
           btn(t('send'), '', function () { doExport('share', exOn); }),
           btn(t('saveFile'), '', function () { doExport('save', exOn); }),
+          btn(t('exTags'), '', function () { doExport('share', false, true); }),
           btn(t('importCfg'), '', doImport),
           h('div', 'note', t('transferNote')));
       } else {
         sec(body, t('transfer'),
           btn(t('exportCfg'), '', function () { doExport('save'); }),
+          btn(t('exTags'), '', function () { doExport('save', false, true); }),
           btn(t('importCfg'), '', doImport),
           h('div', 'note', t('transferNote')));
       }

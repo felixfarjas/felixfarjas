@@ -13,6 +13,7 @@
   var D = B.deck = { base: 'https://boucan.music/', state: 'none', tracks: [], queue: [], track: null, rev: 0, wave: null, common: '', onChange: null };
   var au = null, gain = null, duckK = 1, errs = 0, want = false, rateK = 1;
   var WAVE_N = 240, WAVE_MAX = 80 * 1024 * 1024, WAVE_AHEAD = 400;
+  var XFADE = 0.4;
   var BUF_MAX_MS = 12 * 60000;   // au-delà, un morceau ne tient pas en mémoire : lecture en flux
   var WAVE_MAX_MS = 25 * 60000;  // au-delà, on ne le décode même pas pour son onde
 
@@ -47,6 +48,9 @@
   // Couleurs et commentaires sont rattachés au nom du fichier : ils suivent la
   // config sur un autre téléphone qui a les mêmes fichiers.
   D.key = function (t) { return t.f || String(t.id); };
+  // Point de départ réglé pour ce morceau : { s: seconde, f: fondu d'entrée }.
+  D.cue = function (t) { return cfg().cues[D.key(t)] || { s: 0, f: 0 }; };
+  D.waveOf = function (t) { return B.db.get('kv', 'wave:' + t.id); };
   D.leaf = function (path) { return path ? path.substr(path.lastIndexOf('/') + 1) : ''; };
 
   D.load = function () {
@@ -236,6 +240,17 @@
     } catch (e) { try { s.stop(0); } catch (e2) {} }
     setTimeout(function () { try { s.disconnect(); g.disconnect(); } catch (e3) {} }, sec * 1000 + 300);
   }
+  // Fait taire en fondu la lecture en cours, détachée (fondu croisé d'un saut dans le morceau).
+  function fadeOff(sec) {
+    if (!bsrc) return;
+    bSync();
+    if (bTick) { clearInterval(bTick); bTick = null; }
+    var s = bsrc, g = bsg, now = A.ctx.currentTime;
+    bsrc = null; bsg = null; bOn = false;
+    s.onended = null;
+    try { A.fade(g.gain, A.freeze(g.gain, now), 0, now, sec); s.stop(now + sec + 0.05); } catch (e) { try { s.stop(0); } catch (e2) {} }
+    setTimeout(function () { try { s.disconnect(); g.disconnect(); } catch (e3) {} }, sec * 1000 + 300);
+  }
   // fadeIn (optionnel) : entrée en fondu, en secondes.
   function bStart(rate, fadeIn) {
     bStop();
@@ -361,7 +376,8 @@
     if (!D.track || !(d > 0)) return;
     settle();
     var sec = Math.max(0, Math.min(0.999, f)) * d;
-    if (mode === 'buf') { var on = bOn; bStop(); bpos = sec; if (on) bStart(rateK); }
+    // en lecture : fondu croisé de 0,4 s entre l'ancien et le nouvel endroit, sans à-coup
+    if (mode === 'buf') { var on = bOn; if (on) fadeOff(XFADE); else bStop(); bpos = sec; if (on) bStart(rateK, XFADE); }
     else if (au) { try { au.currentTime = sec; } catch (e) {} }
     emit();
   };
@@ -485,18 +501,27 @@
     if (dogT) { clearTimeout(dogT); dogT = null; }
     D.track = t;
     want = true;
+    var cu = D.cue(t);
     trim();
     glide(0);
     if (bufs[t.id]) {
       // déjà décodé (c'était le « suivant ») : départ immédiat et exact
-      mode = 'buf'; cur = bufs[t.id]; bpos = 0;
-      if (xs) { bStart(0.07, 0.15); eRamp(rateK, xs * 0.6, emit); } else bStart(rateK);
+      mode = 'buf'; cur = bufs[t.id]; bpos = Math.min(cu.s, Math.max(0, cur.duration - 1));
+      if (xs) { bStart(0.07, Math.max(0.15, cu.f)); eRamp(rateK, xs * 0.6, emit); } else bStart(rateK, cu.f);
     } else {
       mode = 'stream'; cur = null;
       ensureAu();
       au.src = D.base + 't/' + t.id;
       try { au.playbackRate = xs ? 0.07 : rateK; } catch (e2) {}
       auPlay();
+      if (cu.s > 0) {
+        var jump = function () {
+          au.removeEventListener('loadedmetadata', jump, false);
+          if (D.track === t && mode === 'stream') { try { au.currentTime = cu.s; } catch (e3) {} }
+        };
+        au.addEventListener('loadedmetadata', jump, false);
+      }
+      if (cu.f > 0) { try { var n0 = A.ctx.currentTime; A.freeze(gain.gain, n0); A.fade(gain.gain, 0, vol(), n0, cu.f); } catch (e4) {} }
       if (xs) eRamp(rateK, xs * 0.6, function () { adopt(); emit(); });
     }
     showWave(t);

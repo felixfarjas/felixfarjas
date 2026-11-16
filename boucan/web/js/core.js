@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.2';
+  B.VERSION = '2.3';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -724,7 +724,7 @@
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {} },
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {}, cues: {} },
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -777,6 +777,7 @@
         if (sub) return null;
         base.type = 'mic';
         base.micMode = p.micMode === 'live' ? 'live' : 'after';
+        base.enhance = !!p.enhance;
         base.denoise = num(p.denoise, 0.5, 0, 1);
         base.vol = num(p.vol, 1, 0, 1.5);
       } else if (p.type === 'fx') {
@@ -800,6 +801,7 @@
         if (typeof p.rawSample === 'string' && (!hasSample || hasSample(p.rawSample))) {
           base.rawSample = p.rawSample;
           base.denoise = num(p.denoise, 0.5, 0, 1);
+          base.enhance = !!p.enhance;
         }
       }
       return base;
@@ -822,7 +824,10 @@
     cfg.editHold = raw.editHold === true;
     cfg.duckFade = num(raw.duckFade, 0.3, 0, 3);
     var dk = raw.deck && typeof raw.deck === 'object' ? raw.deck : {};
-    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), brake: num(dk.brake, 0.5, 0, 3), xspin: dk.xspin !== false, colors: {}, notes: {} };
+    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), brake: num(dk.brake, 0.5, 0, 3), xspin: dk.xspin !== false, colors: {}, notes: {}, cues: {} };
+    // points de départ des morceaux (par nom de fichier) : s = seconde de départ, f = fondu d'entrée
+    var cus = dk.cues && typeof dk.cues === 'object' ? dk.cues : {}, cn = 0, cuk;
+    for (cuk in cus) if (cn < 3000 && cus[cuk] && typeof cus[cuk] === 'object') { cfg.deck.cues[cuk] = { s: num(cus[cuk].s, 0, 0, 36000), f: num(cus[cuk].f, 0, 0, 10) }; cn++; }
     cfg.stopMusic = raw.stopMusic !== false;
     cfg.quickAdd = raw.quickAdd === true;
     // commentaires des morceaux (par nom de fichier)
@@ -874,15 +879,17 @@
 
   // music (optionnel) : morceaux du lecteur à joindre [{id, dir, name, size, c}].
   // Ils sont décrits dans l'en-tête ; leurs octets suivent ceux des samples.
-  B.exportParts = function (music) {
-    var ids = sampleIds(B.cfg), blobs = [];
+  // tagsOnly : seulement les couleurs, commentaires et points de départ des morceaux du lecteur.
+  B.exportParts = function (music, tagsOnly) {
+    var ids = tagsOnly ? [] : sampleIds(B.cfg), blobs = [];
     music = music || [];
     return ids.reduce(function (ch, id) {
       return ch.then(function () { return D.get('samples', id); }).then(function (ab) { blobs.push(ab || new ArrayBuffer(0)); });
     }, Promise.resolve()).then(function () {
       var d = new Date(), size = 0;
       var head = utf8(JSON.stringify({
-        app: 'boucan', format: 1, version: B.VERSION, date: d.toISOString(), config: B.cfg,
+        app: 'boucan', format: 1, version: B.VERSION, date: d.toISOString(), config: tagsOnly ? null : B.cfg,
+        tags: tagsOnly ? { colors: B.cfg.deck.colors, notes: B.cfg.deck.notes, cues: B.cfg.deck.cues } : undefined,
         samples: ids.map(function (id, k) { return { id: id, size: blobs[k].byteLength }; }),
         music: music.map(function (m) { return { dir: m.dir, name: m.name, size: m.size, c: m.c || '' }; })
       }));
@@ -894,7 +901,7 @@
       parts.forEach(function (p) { size += p.byteLength; });
       music.forEach(function (m) { size += m.size; });
       return {
-        name: 'boucan-' + d.getFullYear() + two(d.getMonth() + 1) + two(d.getDate()) + '-' + two(d.getHours()) + two(d.getMinutes()) + '.boucan',
+        name: (tagsOnly ? 'boucan-tags-' : 'boucan-') + d.getFullYear() + two(d.getMonth() + 1) + two(d.getDate()) + '-' + two(d.getHours()) + two(d.getMinutes()) + '.boucan',
         parts: parts, size: size
       };
     });
@@ -937,8 +944,17 @@
         music.push({ dir: String(m.dir || ''), name: m.name, size: m.size, c: m.c || '', blob: f.slice(off, off + m.size) });
         off += m.size;
       });
-      return { config: head.config, samples: samples, music: music };
+      return { config: head.config, samples: samples, music: music, tags: !head.config && head.tags && typeof head.tags === 'object' ? head.tags : null };
     });
+  };
+
+  // Fusionne des étiquettes de morceaux importées (celles du fichier l'emportent).
+  B.applyTags = function (tags) {
+    var merged = B.sanitize({ pages: [], deck: tags }).deck, n = 0;
+    ['colors', 'notes', 'cues'].forEach(function (k) {
+      for (var f in merged[k]) { B.cfg.deck[k][f] = merged[k][f]; n++; }
+    });
+    return B.saveNow().then(function () { return n; });
   };
 
   // Remplace toute la config par celle du fichier.
@@ -967,9 +983,9 @@
 
   // Android : le fichier passe au natif par morceaux base64, qui l'enregistre
   // (action "save") ou ouvre le partage (action "share").
-  B.nativeExport = function (action, music, onProgress) {
+  B.nativeExport = function (action, music, onProgress, tagsOnly) {
     music = music || [];
-    return B.exportParts(music).then(function (ex) {
+    return B.exportParts(music, tagsOnly).then(function (ex) {
       var Nv = window.BoucanNative, CH = 196608;
       function send(u) { for (var o = 0; o < u.length; o += CH) Nv.exportChunk(b64(u.subarray(o, o + CH))); }
       Nv.exportBegin(ex.name);
@@ -1023,8 +1039,8 @@
   };
 
   // Navigateur : téléchargement classique.
-  B.webExport = function () {
-    return B.exportParts().then(function (ex) {
+  B.webExport = function (tagsOnly) {
+    return B.exportParts([], tagsOnly).then(function (ex) {
       var blob = new Blob(ex.parts, { type: 'application/octet-stream' });
       var url = URL.createObjectURL(blob), a = document.createElement('a');
       a.href = url; a.download = ex.name;

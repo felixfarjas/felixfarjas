@@ -99,6 +99,29 @@
   };
 
   // Débruitage d'un enregistrement entier (compense le retard du flux).
+  // « Enhance » : rend une prise de voix plus propre et plus forte en un geste —
+  // coupe-bas (souffle, chocs), compresseur (niveau régulier), puis remise à
+  // niveau avec un limiteur doux.
+  B.enhance = function (pcm, sr) {
+    var n = pcm.length, out = new Float32Array(n), i, x;
+    // coupe-bas 100 Hz, deux passes
+    var a = Math.exp(-2 * Math.PI * 100 / sr), l1 = 0, l2 = 0;
+    for (i = 0; i < n; i++) { l1 = a * l1 + (1 - a) * pcm[i]; x = pcm[i] - l1; l2 = a * l2 + (1 - a) * x; out[i] = x - l2; }
+    // compresseur : seuil -26 dB, rapport 4:1, attaque 5 ms, relâchement 150 ms
+    var att = Math.exp(-1 / (0.005 * sr)), rel = Math.exp(-1 / (0.15 * sr)), env = 0, thr = Math.pow(10, -26 / 20), peak = 0;
+    for (i = 0; i < n; i++) {
+      x = out[i] < 0 ? -out[i] : out[i];
+      env = x > env ? att * env + (1 - att) * x : rel * env + (1 - rel) * x;
+      if (env > thr) out[i] *= Math.pow(env / thr, -0.75);
+      x = out[i] < 0 ? -out[i] : out[i];
+      if (x > peak) peak = x;
+    }
+    // remise à niveau (au plus +30 dB), limiteur doux
+    var g = peak > 0.0005 ? Math.min(31, 1.25 / peak) : 1;
+    for (i = 0; i < n; i++) out[i] = Math.tanh(out[i] * g) * 0.97;
+    return out;
+  };
+
   B.denoise = function (pcm, sr, strength) {
     if (!(strength > 0)) return pcm;
     var d = B.denoiser(sr, strength), padded = new Float32Array(pcm.length + N), out = new Float32Array(pcm.length + N);
