@@ -124,14 +124,16 @@
   }
 
   // Dessine un bouton (sample, micro ou FX) dans une vue.
-  function paint(p, pad, down) {
+  // quick : la case peut proposer l'ajout rapide (réglage du menu) hors édition.
+  function paint(p, pad, down, quick) {
     var cls = 'padIn', st = p.inn.style;
     st.background = ''; st.boxShadow = ''; st.border = '';
     if (!pad) {
       p.inn.className = cls + ' empty';
       st.color = ''; st.backgroundColor = '';
       p.name.className = 'name';
-      p.name.textContent = S.edit ? '+' : '';
+      p.name.textContent = S.edit || (quick && B.cfg.quickAdd) ? '+' : '';
+      if (!S.edit && quick && B.cfg.quickAdd) p.inn.className = cls + ' empty quick';
       p.tag.textContent = ''; p.ico.innerHTML = '';
       setProg(p, null);
       return;
@@ -180,7 +182,7 @@
       else { p.dk.fg = ink(pad.color); deckPaint(p.dk); }
       return;
     }
-    paint(p, pad, isHeld(i, -1));
+    paint(p, pad, isHeld(i, -1), true);
   }
 
   function renderGrid() {
@@ -217,7 +219,12 @@
 
   function renderFx() {
     // sous le nom de l'effet, en petit : sa cible quand ce n'est pas « les deux »
-    var only = B.cfg.fxTarget !== 'all';
+    var only = B.cfg.fxTarget !== 'all', key = B.cfg.fx.type + '|' + B.cfg.fxTarget + '|' + B.lang;
+    el.fxFill.style.width = (B.cfg.fx.amt * 100) + '%';
+    el.fxFill.style.borderRightWidth = B.cfg.fx.amt > 0 ? '5px' : '0';
+    // le libellé n'est refait que s'il change : le doigt posé dessus ne perd pas sa cible
+    if (el.fxLbl.shown === key) return;
+    el.fxLbl.shown = key;
     el.fxLbl.className = only ? 'lbl two' : 'lbl';
     el.fxLbl.textContent = t('fx.' + B.cfg.fx.type);
     if (only) add(el.fxLbl, h('small', '', t('tg.' + B.cfg.fxTarget)));
@@ -847,7 +854,7 @@
 
   function bindPlay() {
     // Swipe horizontal franc et rapide = page voisine. sw.on : le geste est reconnu.
-    var sw = null;
+    var sw = null, qa = null;
     function inCls(e, cls) {
       while (e && e !== el.grid) { if (e.className === cls) return true; e = e.parentNode; }
       return false;
@@ -860,7 +867,11 @@
       A.resume();
       if (sw && sw.on) { ev.preventDefault(); return; }
       var list = inCls(ev.target, 'dkList'), first = ev.changedTouches[0];
-      var own = list || inCls(ev.target, 'dkVol') || inCls(ev.target, 'dkWave'); // zones qui ont leur propre geste
+      var own = inCls(ev.target, 'dkVol') || inCls(ev.target, 'dkWave'); // zones qui ont leur propre geste horizontal
+      // ajout rapide : une case vide touchée (sans glisser) ouvre le choix de son contenu
+      var qi = padIndex(first.target);
+      qa = !S.edit && B.cfg.quickAdd && ev.touches.length === 1 && qi >= 0 && !page().pads[qi] && B.cover(page(), qi) < 0 ?
+        { id: first.identifier, i: qi, x: first.clientX, y: first.clientY, t: Date.now() } : null;
       if (!S.edit && !list) ev.preventDefault();
       sw = B.cfg.swipe && !own && ev.touches.length === 1 && B.cfg.pages.length > 1 && !S.moving ?
         { id: first.identifier, x: first.clientX, y: first.clientY, t: Date.now(), on: false, dx: 0 } : null;
@@ -871,6 +882,15 @@
       }
     });
     function end(ev) {
+      var qt = qa && touchOf(ev.changedTouches, qa.id);
+      if (qt) {
+        var q = qa;
+        qa = null;
+        if (ev.type === 'touchend' && !(sw && sw.on) && Date.now() - q.t < 700 && Math.abs(qt.clientX - q.x) < 12 && Math.abs(qt.clientY - q.y) < 12) {
+          buzz();
+          newPad({ pi: B.cfg.cur, i: q.i, s: -1 });
+        }
+      }
       if (sw && touchOf(ev.changedTouches, sw.id)) {
         var s = sw, to = B.cfg.cur + (s.dx < 0 ? 1 : -1);
         sw = null;
@@ -1489,7 +1509,8 @@
         sec(body, t('dkRoot'), rootB, h('div', 'note', t('dkRootHelp')));
         sec(body, t('dkBrake'), rangeS(function () { return B.cfg.deck.brake / 2; }, function (v) {
           B.cfg.deck.brake = Math.round(v * 20) / 10; B.save();
-        }, function () { return B.cfg.deck.brake ? B.cfg.deck.brake.toFixed(1) + ' s' : t('none'); }), h('div', 'note', t('dkBrakeNote')));
+        }, function () { return B.cfg.deck.brake ? B.cfg.deck.brake.toFixed(1) + ' s' : t('none'); }), h('div', 'note', t('dkBrakeNote')),
+          check(t('dkXspin'), B.cfg.deck.xspin, function (v) { B.cfg.deck.xspin = v; B.save(); }));
       }
       sec(body, t('duckSec'), choice([['none', t('duckNone')], ['duck', t('duckDuck')], ['pause', t('duckPause')]], B.cfg.duck, function (m) {
         B.cfg.duck = m; B.save();
@@ -1910,7 +1931,13 @@
       var eh = btn('', '', function () { B.cfg.editHold = !B.cfg.editHold; ehLbl(); B.save(); });
       function ehLbl() { eh.textContent = t(B.cfg.editHold ? 'editHoldOn' : 'editHoldOff'); eh.className = 'btn gap' + (B.cfg.editHold ? ' on' : ''); }
       ehLbl();
-      sec(body, t('settings'), vib, swp, eh);
+      var sm = btn('', '', function () { B.cfg.stopMusic = !B.cfg.stopMusic; smLbl(); B.save(); });
+      function smLbl() { sm.textContent = t(B.cfg.stopMusic ? 'stopMusicOn' : 'stopMusicOff'); sm.className = 'btn gap' + (B.cfg.stopMusic ? ' on' : ''); }
+      smLbl();
+      var qk = btn('', '', function () { B.cfg.quickAdd = !B.cfg.quickAdd; qkLbl(); B.save(); renderGrid(); });
+      function qkLbl() { qk.textContent = t(B.cfg.quickAdd ? 'quickOn' : 'quickOff'); qk.className = 'btn gap' + (B.cfg.quickAdd ? ' on' : ''); }
+      qkLbl();
+      sec(body, t('settings'), vib, swp, eh, sm, qk);
 
       // Audio : tampon et fréquence, propres à ce téléphone (hors config exportée).
       var ap = B.audioPrefs(), setAudio = function (k, v) {

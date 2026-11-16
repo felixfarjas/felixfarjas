@@ -5,6 +5,14 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
+import android.media.session.MediaSession;
 import android.content.ComponentName;
 import android.content.ContentUris;
 import android.content.ContentValues;
@@ -76,6 +84,13 @@ public class MainActivity extends Activity {
     private static final int REQ_SAVE = 2;
     private static final int REQ_MIC = 3;
     private static final int REQ_MUSIC = 4;
+    private static final int REQ_NOTIF = 5;
+    private static final String ACTION_NP = "com.felixfarjas.boucan.NOW_PLAYING";
+    private static final String CHANNEL = "music";
+    private MediaSession session;
+    private boolean npService, npAsked, npReceiverOn;
+    private long npArtId = -1;
+    private Bitmap npArt;
     /** Adresse fictive sous laquelle la page lit les fichiers de musique du téléphone. */
     private static final String MUSIC_HOST = "boucan.music";
     private Uri musicInUri;
@@ -192,6 +207,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         focus(0);
+        clearNowPlaying();
         closeExport();
         if (web != null) {
             root.removeView(web);
@@ -296,6 +312,7 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
+        if (request == REQ_NOTIF) return;
         if (request == REQ_MUSIC) {
             if (web != null) web.evaluateJavascript("window.Boucan&&Boucan.deckPerm&&Boucan.deckPerm()", null);
             return;
@@ -538,6 +555,168 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ------------------------------------- Lecteur intégré : notification
+
+    private final BroadcastReceiver npReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            deckCmd(intent.getStringExtra("cmd"), 0);
+        }
+    };
+
+    /** Transmet à la page une commande venue des notifications (play, pause, toggle, next, prev, seek). */
+    private void deckCmd(final String cmd, final long arg) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (web != null && cmd != null) {
+                    web.evaluateJavascript("window.Boucan&&Boucan.deckCmd&&Boucan.deckCmd(" + JSONObject.quote(cmd) + "," + arg + ")", null);
+                }
+            }
+        });
+    }
+
+    private PendingIntent npIntent(String cmd, int code) {
+        Intent i = new Intent(ACTION_NP).setPackage(getPackageName()).putExtra("cmd", cmd);
+        return PendingIntent.getBroadcast(this, code, i, PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0));
+    }
+
+    /** Met à jour la session média et la notification du lecteur intégré. */
+    @SuppressWarnings("deprecation")
+    private void updateNowPlaying(String json) {
+        try {
+            JSONObject o = new JSONObject(json);
+            if (!o.optBoolean("active")) {
+                clearNowPlaying();
+                return;
+            }
+            boolean playing = o.optBoolean("playing");
+            long id = o.optLong("id"), pos = o.optLong("pos"), dur = o.optLong("dur");
+            String title = o.optString("t"), artist = o.optString("a");
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (session == null) {
+                session = new MediaSession(this, "Boucan");
+                session.setCallback(new MediaSession.Callback() {
+                    @Override
+                    public void onPlay() {
+                        deckCmd("play", 0);
+                    }
+
+                    @Override
+                    public void onPause() {
+                        deckCmd("pause", 0);
+                    }
+
+                    @Override
+                    public void onStop() {
+                        deckCmd("pause", 0);
+                    }
+
+                    @Override
+                    public void onSkipToNext() {
+                        deckCmd("next", 0);
+                    }
+
+                    @Override
+                    public void onSkipToPrevious() {
+                        deckCmd("prev", 0);
+                    }
+
+                    @Override
+                    public void onSeekTo(long ms) {
+                        deckCmd("seek", ms);
+                    }
+                });
+                if (Build.VERSION.SDK_INT >= 26) {
+                    NotificationChannel ch = new NotificationChannel(CHANNEL, french ? "Lecteur de musique" : "Music player", NotificationManager.IMPORTANCE_LOW);
+                    ch.setShowBadge(false);
+                    nm.createNotificationChannel(ch);
+                }
+            }
+            if (!npReceiverOn) {
+                IntentFilter f = new IntentFilter(ACTION_NP);
+                if (Build.VERSION.SDK_INT >= 33) registerReceiver(npReceiver, f, RECEIVER_NOT_EXPORTED);
+                else registerReceiver(npReceiver, f);
+                npReceiverOn = true;
+            }
+            // Android 13+ : demander une fois le droit d'afficher des notifications
+            if (Build.VERSION.SDK_INT >= 33 && !npAsked
+                    && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                npAsked = true;
+                requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIF);
+            }
+            if (id != npArtId) {
+                npArtId = id;
+                npArt = null;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    try {
+                        npArt = getContentResolver().loadThumbnail(
+                                ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id), new Size(256, 256), null);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            MediaMetadata.Builder md = new MediaMetadata.Builder()
+                    .putString(MediaMetadata.METADATA_KEY_TITLE, title)
+                    .putString(MediaMetadata.METADATA_KEY_ARTIST, artist)
+                    .putLong(MediaMetadata.METADATA_KEY_DURATION, dur);
+            if (npArt != null) md.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, npArt);
+            session.setMetadata(md.build());
+            session.setPlaybackState(new PlaybackState.Builder()
+                    .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE
+                            | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS | PlaybackState.ACTION_SEEK_TO)
+                    .setState(playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED, pos, playing ? 1f : 0f)
+                    .build());
+            session.setActive(true);
+
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
+            Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            b.setSmallIcon(getResources().getIdentifier("ic_note", "drawable", getPackageName()))
+                    .setContentTitle(title).setContentText(artist).setLargeIcon(npArt)
+                    .setContentIntent(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0)))
+                    .setVisibility(Notification.VISIBILITY_PUBLIC).setOngoing(playing).setShowWhen(false).setOnlyAlertOnce(true)
+                    .addAction(android.R.drawable.ic_media_previous, "prev", npIntent("prev", 1))
+                    .addAction(playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play, "play", npIntent("toggle", 2))
+                    .addAction(android.R.drawable.ic_media_next, "next", npIntent("next", 3))
+                    .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()).setShowActionsInCompactView(0, 1, 2));
+            Notification n = b.build();
+            PlayService.current = n;
+            if (playing || npService) {
+                try {
+                    Intent sv = new Intent(this, PlayService.class).putExtra("fg", playing);
+                    if (playing && Build.VERSION.SDK_INT >= 26) startForegroundService(sv);
+                    else startService(sv);
+                    npService = playing;
+                } catch (RuntimeException e) {
+                    // app en arrière-plan : Android refuse le service, la notification seule suffit
+                    nm.notify(PlayService.ID, n);
+                }
+            } else {
+                nm.notify(PlayService.ID, n);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void clearNowPlaying() {
+        try {
+            PlayService.current = null;
+            stopService(new Intent(this, PlayService.class));
+            npService = false;
+            ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(PlayService.ID);
+            if (session != null) {
+                session.setActive(false);
+                session.release();
+                session = null;
+            }
+            if (npReceiverOn) {
+                unregisterReceiver(npReceiver);
+                npReceiverOn = false;
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     // ----------------------------------------------------- Lecteur de musique
 
     /** Le lecteur à piloter : celui qui joue, sinon le plus récent. Lève SecurityException sans l'accès aux notifications. */
@@ -584,6 +763,17 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception ignored) {
             }
+        }
+
+        /** Morceau en cours du lecteur intégré (JSON), pour la notification et ses commandes. */
+        @JavascriptInterface
+        public void nowPlaying(final String json) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    updateNowPlaying(json);
+                }
+            });
         }
 
         /** Morceaux du téléphone en JSON, ou "PERM" s'il faut d'abord l'autorisation. */

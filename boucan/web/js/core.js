@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.0';
+  B.VERSION = '2.1';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -624,6 +624,14 @@
     if (A.braked) brake(false);
     if (fxIds.length) { applyFx(0.03); fxIds.forEach(function (id) { if (A.onChange) A.onChange(id); }); }
     if (B.mic && B.mic.on) B.mic.stop(true);
+    // réglage du menu : STOP peut laisser tourner la musique du lecteur
+    if (B.deck && B.deck.playing() && B.cfg && B.cfg.stopMusic === false) {
+      // la musique passe par la même sortie : on ne la coupe pas, on éteint juste la queue d'écho
+      A.fb.gain.cancelScheduledValues(t);
+      A.fb.gain.setValueAtTime(0, t);
+      A.fb.gain.setTargetAtTime(A.fxFb || 0.35, t + 0.4, 0.05);
+      return;
+    }
     if (B.deck) B.deck.pause();
     A.killed = true;
     A.kill.gain.cancelScheduledValues(t);
@@ -713,7 +721,7 @@
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, colors: {}, notes: {} },
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {} },
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -811,7 +819,9 @@
     cfg.editHold = raw.editHold === true;
     cfg.duckFade = num(raw.duckFade, 0.3, 0, 3);
     var dk = raw.deck && typeof raw.deck === 'object' ? raw.deck : {};
-    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), brake: num(dk.brake, 0.5, 0, 3), colors: {}, notes: {} };
+    cfg.deck = { root: str(dk.root, '', 500), sub: str(dk.sub, '', 500), vol: num(dk.vol, 0.8, 0, 1), brake: num(dk.brake, 0.5, 0, 3), xspin: dk.xspin !== false, colors: {}, notes: {} };
+    cfg.stopMusic = raw.stopMusic !== false;
+    cfg.quickAdd = raw.quickAdd === true;
     // commentaires des morceaux (par nom de fichier)
     var nts = dk.notes && typeof dk.notes === 'object' ? dk.notes : {}, nn = 0, nk;
     for (nk in nts) if (nn < 3000 && typeof nts[nk] === 'string' && nts[nk]) { cfg.deck.notes[nk] = nts[nk].substr(0, 24); nn++; }

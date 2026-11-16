@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Lecteur intégré : lire les fichiers de musique du téléphone. -->
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- Lecteur intégré : commandes dans les notifications, musique qui continue en arrière-plan. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
@@ -29,6 +33,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".PlayService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <!-- Requis par Android pour voir et piloter le lecteur de musique en cours (case PLAYER). -->
         <service
