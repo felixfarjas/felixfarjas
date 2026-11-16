@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.1';
+  B.VERSION = '2.2';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.SLOTS = 8;
@@ -20,6 +20,9 @@
   B.MAX_SEC = 600;   // durée max d'un son importé
   B.MAX_BYTES = 60 * 1024 * 1024;
   B.FX = ['reverb', 'echo', 'highcut', 'lowcut', 'mega', 'disto', 'flanger', 'gate', 'pitchup', 'pitchdn'];
+  // une couleur par effet du curseur
+  B.FX_COLOR = { reverb: '#43A047', echo: '#00ACC1', highcut: '#1E88E5', lowcut: '#8E24AA', mega: '#FB8C00', disto: '#E53935',
+    flanger: '#EC407A', gate: '#FDD835', pitchup: '#7CB342', pitchdn: '#546E7A' };
   B.FX_DEFAULT = ['reverb', 'echo', 'highcut', 'lowcut'];
   B.FADES = [0, 0.1, 0.5, 2];
   // effets DJ des cases FX (appliqués à tout ce qui joue)

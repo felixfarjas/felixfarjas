@@ -177,7 +177,7 @@
       st.backgroundColor = wide ? pad.color : 'transparent'; st.color = wide ? ink(pad.color) : '';
       p.name.textContent = ''; p.tag.textContent = ''; p.ico.innerHTML = '';
       setProg(p, null);
-      if (hub) for (k = 0; k < 4; k++) paint(p.hub.v[k], pad.subs[k], isHeld(i, k));
+      if (hub) for (k = 0; k < 4; k++) paint(p.hub.v[k], pad.subs[k], isHeld(i, k), true);
       else if (pad.type === 'player') playerPaint(p.pl);
       else { p.dk.fg = ink(pad.color); deckPaint(p.dk); }
       return;
@@ -219,6 +219,7 @@
 
   function renderFx() {
     // sous le nom de l'effet, en petit : sa cible quand ce n'est pas « les deux »
+    el.fxFill.style.background = B.FX_COLOR[B.cfg.fx.type] || '';
     var only = B.cfg.fxTarget !== 'all', key = B.cfg.fx.type + '|' + B.cfg.fxTarget + '|' + B.lang;
     el.fxFill.style.width = (B.cfg.fx.amt * 100) + '%';
     el.fxFill.style.borderRightWidth = B.cfg.fx.amt > 0 ? '5px' : '0';
@@ -870,8 +871,11 @@
       var own = inCls(ev.target, 'dkVol') || inCls(ev.target, 'dkWave'); // zones qui ont leur propre geste horizontal
       // ajout rapide : une case vide touchée (sans glisser) ouvre le choix de son contenu
       var qi = padIndex(first.target);
-      qa = !S.edit && B.cfg.quickAdd && ev.touches.length === 1 && qi >= 0 && !page().pads[qi] && B.cover(page(), qi) < 0 ?
-        { id: first.identifier, i: qi, x: first.clientX, y: first.clientY, t: Date.now() } : null;
+      var qc = qi >= 0 ? page().pads[qi] : null, qs = qc && qc.type === 'hub' ? subIndex(first.target) : -1;
+      // case vide, ou emplacement vide d'un hub
+      var qok = qi >= 0 && (qc ? qs >= 0 && !qc.subs[qs] : B.cover(page(), qi) < 0);
+      qa = !S.edit && B.cfg.quickAdd && ev.touches.length === 1 && qok ?
+        { id: first.identifier, i: qi, s: qs, x: first.clientX, y: first.clientY, t: Date.now() } : null;
       if (!S.edit && !list) ev.preventDefault();
       sw = B.cfg.swipe && !own && ev.touches.length === 1 && B.cfg.pages.length > 1 && !S.moving ?
         { id: first.identifier, x: first.clientX, y: first.clientY, t: Date.now(), on: false, dx: 0 } : null;
@@ -888,7 +892,7 @@
         qa = null;
         if (ev.type === 'touchend' && !(sw && sw.on) && Date.now() - q.t < 700 && Math.abs(qt.clientX - q.x) < 12 && Math.abs(qt.clientY - q.y) < 12) {
           buzz();
-          newPad({ pi: B.cfg.cur, i: q.i, s: -1 });
+          newPad({ pi: B.cfg.cur, i: q.i, s: q.s });
         }
       }
       if (sw && touchOf(ev.changedTouches, sw.id)) {
@@ -1428,7 +1432,13 @@
     B.FX.forEach(function (f) {
       var row = h('div', 'row fxRow'), b = h('button', 'btn', t('fx.' + f)), more = h('button', 'btn more', '\u25be');
       var panel = h('div', 'fxSet'), paints = [];
-      function paint() { b.className = 'btn' + (B.cfg.fxList.indexOf(f) >= 0 ? ' on' : ''); }
+      // coché : le bouton prend la couleur de l'effet
+      function paint() {
+        var act = B.cfg.fxList.indexOf(f) >= 0, c = B.FX_COLOR[f];
+        b.className = 'btn';
+        b.style.background = act ? c : ''; b.style.color = act ? ink(c) : '';
+        b.style.boxShadow = act ? '' : 'inset 8px 0 0 ' + c;
+      }
       paint();
       on(b, 'click', function () {
         var k = B.cfg.fxList.indexOf(f);

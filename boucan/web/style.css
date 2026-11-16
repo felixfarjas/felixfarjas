@@ -135,7 +135,7 @@ body.editing .mini .padIn { outline-width: 2px; outline-offset: -4px; }
 .dkVol .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255, 255, 255, .3); border-right: 3px solid currentColor; }
 .dkVol .lbl { position: absolute; left: 10px; top: 0; line-height: 26px; font-size: 10px; letter-spacing: 1px; opacity: .8; }
 .row.tight .btn { font-size: 13px; padding: 6px 2px; letter-spacing: 0; }
-.fxRow { margin-top: 14px; }
+.row.fxRow { margin-top: 14px; }
 .fxRow .btn { min-height: 58px; }
 .row > .more { flex: none; width: 56px; font-size: 20px; }
 .fxSet { padding: 2px 0 12px 12px; border-left: 3px solid #444; margin: 6px 0 4px 3px; }
