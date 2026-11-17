@@ -119,9 +119,28 @@ body.editing .padIn.hubIn { outline: none; }
 .mini .tag, .mini .padIco { display: none; }
 body.editing .mini .padIn { outline-width: 2px; outline-offset: -4px; }
 /* réglage d'une case FX en glissant */
-#adj { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, .2); z-index: 24; pointer-events: none; opacity: 0;
+#adj { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, .06); z-index: 24; pointer-events: none; opacity: 0;
   -webkit-transition: opacity .2s; transition: opacity .2s; }
 #adj.on { opacity: 1; -webkit-transition: opacity .5s; transition: opacity .5s; }
+/* jauge discrète (clavier) : une fine barre, rien n'est assombri */
+#adjMini { position: absolute; height: 28px; border-radius: 14px; background: rgba(0, 0, 0, .72); overflow: hidden; z-index: 24; pointer-events: none; opacity: 0;
+  -webkit-transition: opacity .15s; transition: opacity .15s; }
+#adjMini.on { opacity: 1; }
+#adjMini .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; opacity: .5; }
+#adjMini .lbl { position: absolute; left: 0; right: 0; top: 0; line-height: 28px; padding: 0 10px; text-align: center; font-size: 12px; letter-spacing: 1px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* case BPM control */
+.bpmc { position: absolute; left: 8px; top: 8px; right: 8px; bottom: 8px; display: flex; flex-direction: column; }
+.bcTag { position: absolute; left: 2px; top: 0; font-size: 10px; letter-spacing: 1.5px; opacity: .8; }
+.bcDot { position: absolute; right: 2px; top: 0; width: 13px; height: 13px; border-radius: 7px; border: 2px solid currentColor; opacity: .45; }
+.bcDot.on { background: currentColor; opacity: 1; }
+.bcDot.bar { background: #E53935; border-color: #E53935; }
+.bcVal { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; font-size: 10vw; line-height: 1; }
+.bcRow { flex: none; height: 46%; display: flex; margin: 0 -3px; }
+.bcBtn { flex: 1; margin: 0 3px; border-radius: 10px; background: rgba(255, 255, 255, .13); display: flex; align-items: center; justify-content: center; font-size: 26px; font-weight: 400; }
+.bcBtn.bcSync { flex: 1.7; font-size: 15px; font-weight: 700; letter-spacing: 1px; background: #FDD835; color: #000; }
+.bcBtn.hit { background: #fff; color: #000; }
+.btn.tbpm { background: #212121; border: 3px solid #FDD835; }
+.secVal { font-size: 18px; margin: 2px 0 8px; }
 #adjBox { position: absolute; width: 190px; height: 190px; border: 4px solid #fff; border-radius: 46px; background: #000; text-align: center; overflow: hidden; }
 #adjPie { display: block; width: 84px; height: 84px; margin: 12px auto 4px; }
 #adjTxt { font-size: 20px; }

@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.8';
+  B.VERSION = '2.9';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.MAX_SETS = 12;
@@ -752,7 +752,7 @@
   // comme n'importe quel son importé.
   B.buildFactory = function (onProgress) {
     var en = B.lang === 'en' ? 1 : 0, jobs = [], i = 0;
-    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, sync: false, fxSync: true, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, midi: { bpm: 120, root: 9, scale: 'minor', swing: 0 }, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {}, cues: {}, hidden: {}, bpm: {} }, sets: [],
+    var cfg = { v: 1, fx: { type: 'reverb', amt: 0 }, fxList: B.FX_DEFAULT.slice(), duck: 'duck', duckFade: 0.3, sync: false, fxSync: true, autoKey: false, swipe: true, editHold: false, fxTarget: 'all', fxSet: {}, stopMusic: true, quickAdd: false, midi: { bpm: 120, root: 9, scale: 'minor', swing: 0 }, deck: { root: '', sub: '', vol: 0.8, brake: 0.5, xspin: true, colors: {}, notes: {}, cues: {}, hidden: {}, bpm: {}, key: {} }, sets: [],
       lang: B.lang, vibrate: true, cur: 0, pages: [] };
     B.FACTORY_LAYOUT.forEach(function (pg) {
       var page = { name: pg.name[en], color: pg.color, pads: blankPads() };
@@ -768,6 +768,7 @@
     // page MIDI : quatre clips de démonstration et le clavier
     var mp = { name: 'MIDI', color: '#00897B', pads: blankPads() };
     B.midi.demo(B.uid).forEach(function (c, k) { mp.pads[k] = c; });
+    mp.pads[4] = { id: B.uid('p'), type: 'bpm', name: 'BPM', color: '#212121' };
     mp.pads[6] = { id: B.uid('p'), type: 'keys', name: 'CLAVIER', color: '#263238', inst: 'pluck', vol: 0.8, oct: 0, m: B.midi.INST.pluck.def.slice(), live: [0] };
     cfg.pages.push(mp);
     return new Promise(function (res, rej) {
@@ -841,6 +842,10 @@
         lv.slice(0, 12).forEach(function (l) {
           if (l instanceof Array && base.voices[l[0]] && l[1] >= 0 && l[1] <= 4) base.live.push([Math.floor(l[0]), Math.floor(l[1])]);
         });
+      } else if (p.type === 'bpm') {
+        // case BPM control : tempo, − / +, SYNC
+        if (sub) return null;
+        base.type = 'bpm';
       } else if (p.type === 'mic') {
         if (sub) return null;
         base.type = 'mic';
@@ -889,6 +894,7 @@
     cfg.vibrate = raw.vibrate !== false;
     cfg.duck = B.DUCKS.indexOf(raw.duck) >= 0 ? raw.duck : 'duck';
     cfg.sync = raw.sync === true;
+    cfg.autoKey = raw.autoKey === true;
     cfg.fxSync = raw.fxSync !== false;
     cfg.swipe = raw.swipe !== false;
     cfg.editHold = raw.editHold === true;
@@ -899,7 +905,18 @@
     // tempo analysé des morceaux (mode sync), par nom de fichier : [bpm, instant du premier temps fort]
     cfg.deck.bpm = {};
     var bps = dk.bpm && typeof dk.bpm === 'object' ? dk.bpm : {}, bn = 0, bkk;
-    for (bkk in bps) if (bn < 5000 && bps[bkk] instanceof Array) { cfg.deck.bpm[bkk] = [num(bps[bkk][0], 120, 40, 240), num(bps[bkk][1], 0, 0, 30)]; bn++; }
+    for (bkk in bps) {
+      var bv = bps[bkk];
+      if (bn >= 5000 || !(bv instanceof Array)) continue;
+      cfg.deck.bpm[bkk] = [num(bv[0], 120, 40, 240), num(bv[1], 0, 0, 30)];
+      // calage corrigé à la main : on garde aussi les valeurs analysées
+      if (typeof bv[2] === 'number' && typeof bv[3] === 'number') cfg.deck.bpm[bkk].push(num(bv[2], 120, 40, 240), num(bv[3], 0, 0, 30));
+      bn++;
+    }
+    // gamme analysée des morceaux, par nom de fichier : [tonique 0..11, 1 si mineur]
+    cfg.deck.key = {};
+    var kys = dk.key && typeof dk.key === 'object' ? dk.key : {}, kn = 0, kyk;
+    for (kyk in kys) if (kn < 5000 && kys[kyk] instanceof Array) { cfg.deck.key[kyk] = [Math.floor(num(kys[kyk][0], 0, 0, 11)), kys[kyk][1] ? 1 : 0]; kn++; }
     var hid = dk.hidden && typeof dk.hidden === 'object' ? dk.hidden : {}, hn = 0, hk;
     for (hk in hid) if (hn < 5000 && hid[hk]) { cfg.deck.hidden[hk] = 1; hn++; }
     // points de départ des morceaux (par nom de fichier) : s = seconde de départ, f = fondu d'entrée
@@ -984,7 +1001,7 @@
       var d = new Date(), size = 0;
       var head = utf8(JSON.stringify({
         app: 'boucan', format: 1, version: B.VERSION, date: d.toISOString(), config: tagsOnly ? null : B.cfg,
-        tags: tagsOnly ? { colors: B.cfg.deck.colors, notes: B.cfg.deck.notes, cues: B.cfg.deck.cues, hidden: B.cfg.deck.hidden, bpm: B.cfg.deck.bpm } : undefined,
+        tags: tagsOnly ? { colors: B.cfg.deck.colors, notes: B.cfg.deck.notes, cues: B.cfg.deck.cues, hidden: B.cfg.deck.hidden, bpm: B.cfg.deck.bpm, key: B.cfg.deck.key } : undefined,
         samples: ids.map(function (id, k) { return { id: id, size: blobs[k].byteLength }; }),
         music: music.map(function (m) { return { dir: m.dir, name: m.name, size: m.size, c: m.c || '' }; })
       }));
@@ -1046,7 +1063,7 @@
   // Fusionne des étiquettes de morceaux importées (celles du fichier l'emportent).
   B.applyTags = function (tags) {
     var merged = B.sanitize({ pages: [], deck: tags }).deck, n = 0;
-    ['colors', 'notes', 'cues', 'hidden', 'bpm'].forEach(function (k) {
+    ['colors', 'notes', 'cues', 'hidden', 'bpm', 'key'].forEach(function (k) {
       for (var f in merged[k]) { B.cfg.deck[k][f] = merged[k][f]; n++; }
     });
     return B.saveNow().then(function () { return n; });

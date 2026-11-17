@@ -447,8 +447,9 @@
       d.bent = true;
       live.forEach(function (k2) { p.m[k2] = Math.round(Math.max(0, Math.min(1, d.m0[id][k2] + dv)) * 100) / 100; });
       M.keyBend(p);
-      U.gauge(d.el.getBoundingClientRect(), '#FDD835', p.m[live[0]], Math.round(p.m[live[0]] * 100) + ' %',
-        live.map(function (k2) { return t('mm.' + I.macros[k2]); }).join(' + '));
+      // jauge discrète au-dessus du clavier : elle ne cache pas les touches
+      U.gaugeMini(d.el.getBoundingClientRect(), '#FDD835', p.m[live[0]],
+        live.map(function (k2) { return t('mm.' + I.macros[k2]); }).join(' + ') + '  ' + Math.round(p.m[live[0]] * 100) + ' %');
     }
     function start(id, x, y) {
       if (!d.pad || U.state.edit) return;
@@ -465,7 +466,7 @@
       if (d.pad) M.keyOff(d.pad.id + ':' + id);
       var left = false, q;
       for (q in d.cur) left = true;
-      if (d.bent && !left) { d.bent = false; U.gaugeHide(); B.save(); }
+      if (d.bent && !left) { d.bent = false; U.gaugeMiniHide(); B.save(); }
       lit();
     }
     function each(ev, fn) { for (var i = 0; i < ev.changedTouches.length; i++) fn(ev.changedTouches[i]); }

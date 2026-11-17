@@ -8,6 +8,9 @@ Soundboard Android ultra simple, pensé pour être joué d'une main, à vélo, e
 - **Clips MIDI** (`web/js/midi.js`, `web/js/midiui.js`) : boucles à composer, jusqu'à 4 voix (4 batteries et 12 synthés synthétisés),
   séquenceur de batterie ou grille mélodique verrouillée sur la gamme, générateur de motifs, tempo et gamme communs,
   un clip à la fois par page avec enchaînement en fin de boucle. Widget *clavier* de huit touches dans la gamme.
+- **Mode sync et BPM control** : le tempo et la gamme des morceaux du lecteur sont analysés une fois et gardés avec leurs étiquettes ;
+  clips et effets calés suivent la musique. La case *BPM control* ajuste le tempo et recale les clips à la main (SYNC),
+  un appui long sur SYNC revenant à l'analyse. Option *gamme automatique* : les clips et le clavier passent dans la tonalité du morceau.
 - **Samples** : *one shot*, *on / off* ou *piano*, boucle, recadrage avec zoom, fondus, volume, débruiteur et « enhance » pour les prises micro.
 - **Effets** : reverb, écho, coupe-haut, coupe-bas, mégaphone, disto, flanger, hachoir, pitch, loop, vinyl stop, cut.
   Un curseur en haut à gauche (le bouton `FX` fait défiler les effets ; appui long : cible, liste et réglages de chaque effet)
@@ -26,7 +29,7 @@ Soundboard Android ultra simple, pensé pour être joué d'une main, à vélo, e
 
 ## Installer
 
-Télécharger `dist/Boucan-2.8.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
+Télécharger `dist/Boucan-2.9.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
 depuis cette source quand Android le demande.
 
 ## Organisation

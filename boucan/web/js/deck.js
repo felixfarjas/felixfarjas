@@ -421,6 +421,49 @@
     return { bpm: info[0], off: info[1], pos: bpos, rate: bsrc.playbackRate.value };
   };
   D.bpmOf = function (t) { var i = cfg().bpm[D.key(t)]; return i ? i[0] : 0; };
+  // Calage à la main (case BPM control). Le tempo du morceau est rangé ainsi :
+  // [bpm, premier temps, bpm analysé, premier temps analysé] ; les deux derniers
+  // n'existent que si on a corrigé à la main, pour pouvoir revenir à l'analyse.
+  function info() { return D.track ? cfg().bpm[D.key(D.track)] : null; }
+  function keepOrig(i) { if (i.length < 4) { i[2] = i[0]; i[3] = i[1]; } }
+  D.setBpm = function (v) {
+    var i = info();
+    if (!i) return false;
+    keepOrig(i);
+    i[0] = Math.round(Math.max(40, Math.min(240, v)) * 100) / 100;
+    B.save();
+    return true;
+  };
+  D.setOff = function (off) {
+    var i = info();
+    if (!i) return false;
+    keepOrig(i);
+    // ramené dans les 16 premiers temps : la grille reste la même pour tous les clips (1, 2 ou 4 mesures)
+    var P = 16 * 60 / i[0];
+    i[1] = Math.round((((off % P) + P) % P) * 1000) / 1000;
+    B.save();
+    return true;
+  };
+  D.resetManual = function () {
+    var i = info();
+    if (!i || i.length < 4) return false;
+    i[0] = i[2]; i[1] = i[3]; i.length = 2;
+    B.save();
+    return true;
+  };
+  D.manual = function () { var i = info(); return !!i && i.length >= 4; };
+  // Gamme du morceau : [tonique 0..11, 1 si mineur].
+  D.keyFor = function (t) { return cfg().key[D.key(t)] || null; };
+  D.keyNow = function () { return D.track && want ? cfg().key[D.key(D.track)] || null : null; };
+  D.analyseKey = function (force) {
+    var t = D.track, b = t && bufs[t.id], k;
+    if (!b || (!force && cfg().key[D.key(t)])) return false;
+    k = keyOf(b);
+    if (!k) return false;
+    cfg().key[D.key(t)] = k;
+    B.save();
+    return true;
+  };
   // Analyse (ou ré-analyse) le tempo du morceau en cours s'il est en mémoire. Renvoie vrai si c'est fait.
   D.analyse = function (force) {
     var t = D.track, b = t && bufs[t.id];
@@ -456,6 +499,71 @@
     if (on) bStart(rateK);
     try { au.pause(); } catch (e) {}
     emit();
+  }
+
+  // Détection de la gamme d'un morceau décodé. Renvoie [tonique 0..11 (0 = do), 1 si mineur / 0 si majeur], ou null.
+  //  1. 120 fenêtres réparties sur tout le morceau, ramenées à environ 11 kHz ;
+  //  2. spectre de chaque fenêtre, rangé par note (do, do#, ré…) entre 80 Hz et 2 kHz : le « chroma » ;
+  //  3. comparaison avec les profils de Krumhansl des 24 gammes majeures et mineures : la plus ressemblante gagne.
+  var KMAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+  var KMIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+  function fft(re, im) {
+    var n = re.length, i, j, k, len, half, step, a, wr, wi, tr, ti, ur, ui, x;
+    for (i = 1, j = 0; i < n; i++) {
+      for (k = n >> 1; j & k; k >>= 1) j ^= k;
+      j ^= k;
+      if (i < j) { x = re[i]; re[i] = re[j]; re[j] = x; x = im[i]; im[i] = im[j]; im[j] = x; }
+    }
+    for (len = 2; len <= n; len <<= 1) {
+      half = len >> 1; step = -2 * Math.PI / len;
+      for (k = 0; k < half; k++) {
+        a = step * k; wr = Math.cos(a); wi = Math.sin(a);
+        for (i = k; i < n; i += len) {
+          j = i + half;
+          tr = re[j] * wr - im[j] * wi; ti = re[j] * wi + im[j] * wr;
+          ur = re[i]; ui = im[i];
+          re[i] = ur + tr; im[i] = ui + ti; re[j] = ur - tr; im[j] = ui - ti;
+        }
+      }
+    }
+  }
+  function keyOf(buf) {
+    var N = 4096, DEC = Math.max(1, Math.round(buf.sampleRate / 11025)), fs = buf.sampleRate / DEC, span = N * DEC;
+    var d = buf.getChannelData(0), n = d.length, FR = 120;
+    if (n < span * 6) return null;
+    var re = new Float32Array(N), im = new Float32Array(N), win = new Float32Array(N), chroma = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    var lo = Math.ceil(80 * N / fs), hi = Math.floor(2000 * N / fs), pc = [], f, i, k, q;
+    for (i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1));
+    for (k = lo; k <= hi; k++) pc[k] = ((Math.round(12 * Math.log(k * fs / N / 440) / Math.LN2) + 9) % 12 + 12) % 12;
+    for (f = 0; f < FR; f++) {
+      var at = Math.floor((f + 0.5) / FR * (n - span)), fc = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], sum = 0;
+      for (i = 0; i < N; i++) {
+        var s = 0, b0 = at + i * DEC;
+        for (q = 0; q < DEC; q++) s += d[b0 + q];
+        re[i] = s / DEC * win[i]; im[i] = 0;
+      }
+      fft(re, im);
+      for (k = lo; k <= hi; k++) fc[pc[k]] += Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+      for (k = 0; k < 12; k++) sum += fc[k];
+      // chaque fenêtre pèse autant : un passage fort n'écrase pas le reste du morceau
+      if (sum > 1e-6) for (k = 0; k < 12; k++) chroma[k] += fc[k] / sum;
+    }
+    function corr(p, r) {
+      var ma = 0, mb = 0, sab = 0, saa = 0, sbb = 0, j2;
+      for (j2 = 0; j2 < 12; j2++) { ma += chroma[(j2 + r) % 12]; mb += p[j2]; }
+      ma /= 12; mb /= 12;
+      for (j2 = 0; j2 < 12; j2++) {
+        var xa = chroma[(j2 + r) % 12] - ma, xb = p[j2] - mb;
+        sab += xa * xb; saa += xa * xa; sbb += xb * xb;
+      }
+      return sab / Math.sqrt(saa * sbb || 1);
+    }
+    var best = -2, out = null, r2, c;
+    for (r2 = 0; r2 < 12; r2++) {
+      c = corr(KMAJ, r2); if (c > best) { best = c; out = [r2, 0]; }
+      c = corr(KMIN, r2); if (c > best) { best = c; out = [r2, 1]; }
+    }
+    return out;
   }
 
   // Détection du tempo d'un morceau décodé. Renvoie [bpm, instant en secondes d'un premier temps de mesure].
@@ -551,6 +659,8 @@
         if (wanted(t) && fits(t)) bufs[t.id] = buf;
         // mode sync : le tempo est analysé une fois, au premier décodage, puis gardé avec les étiquettes
         if (B.cfg.sync && !cfg().bpm[D.key(t)]) { try { cfg().bpm[D.key(t)] = tempoOf(buf); B.save(); } catch (e) {} }
+        // gamme automatique : même principe, une seule analyse par morceau
+        if (B.cfg.autoKey && !cfg().key[D.key(t)]) { try { var ky = keyOf(buf); if (ky) { cfg().key[D.key(t)] = ky; B.save(); } } catch (e2) {} }
         done(out);
       }
       try {

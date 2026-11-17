@@ -85,7 +85,7 @@
   function buildGrid() {
     for (var i = 0; i < B.SLOTS; i++) {
       var p = viewDom(), k;
-      p.el = h('div', 'pad'); p.pl = playerDom(); p.dk = deckDom(); p.kb = B.midiUI.keysDom(); p.hub = { el: h('div', 'hub'), v: [] };
+      p.el = h('div', 'pad'); p.pl = playerDom(); p.dk = deckDom(); p.kb = B.midiUI.keysDom(); p.bc = bpmDom(); p.hub = { el: h('div', 'hub'), v: [] };
       for (k = 0; k < 4; k++) {
         var m = viewDom(), box = h('div', 'mini');
         box.style.left = (k % 2 * 50) + '%';
@@ -97,7 +97,7 @@
       p.el.style.left = (i % 2 * 50) + '%';
       p.el.style.top = (Math.floor(i / 2) * 25) + '%';
       p.el.setAttribute('data-i', i);
-      add(el.grid, add(p.el, add(p.inn, p.pl.el, p.dk.el, p.kb.el, p.hub.el)));
+      add(el.grid, add(p.el, add(p.inn, p.pl.el, p.dk.el, p.kb.el, p.bc.el, p.hub.el)));
       pads.push(p);
     }
   }
@@ -175,7 +175,17 @@
     p.dk.el.style.display = wide && pad.type === 'deck' ? '' : 'none';
     p.kb.el.style.display = wide && pad.type === 'keys' ? '' : 'none';
     p.hub.el.style.display = hub ? '' : 'none';
+    p.bc.el.style.display = pad && pad.type === 'bpm' ? '' : 'none';
     if (covered) return;
+    if (pad && pad.type === 'bpm') {
+      p.inn.className = 'padIn pl';
+      st.background = ''; st.border = ''; st.boxShadow = '';
+      st.backgroundColor = pad.color; st.color = ink(pad.color);
+      p.name.textContent = ''; p.tag.textContent = ''; p.ico.innerHTML = '';
+      setProg(p, null);
+      bpmPaint(p.bc);
+      return;
+    }
     if (wide || hub) {
       p.inn.className = wide ? 'padIn pl' : 'padIn hubIn';
       st.background = ''; st.border = ''; st.boxShadow = '';
@@ -302,6 +312,7 @@
     B.deck.pump(); // ondes d'avance, quand rien ne joue
     // mode sync : tempo du morceau en cours analysé si besoin, et effets calés qui suivent le tempo
     if (B.cfg.sync && B.deck.analyse()) deckPaintAll();
+    if (B.cfg.autoKey && B.deck.analyseKey()) deckPaintAll();
     B.midi.poll();
     if (!NATIVE || !window.BoucanNative.playerState || !shown('player')) return;
     var st;
@@ -455,8 +466,8 @@
     setText(d.now, D.track ? D.track.t + (D.track.a ? ' — ' + D.track.a : '') : '');
     // temps écoulé / durée, à droite du titre
     var tm = D.track ? D.times() : null;
-    var bp = B.cfg.sync && D.track ? D.bpmOf(D.track) : 0;
-    setText(d.time, D.loading() ? '\u2026' : tm && tm[1] > 0 ? (bp ? Math.round(bp) + ' BPM · ' : '') + clock(tm[0]) + ' / ' + clock(tm[1]) : '');
+    var bp = B.cfg.sync && D.track ? D.bpmOf(D.track) : 0, ky = B.cfg.autoKey && D.track ? D.keyFor(D.track) : null;
+    setText(d.time, D.loading() ? '\u2026' : tm && tm[1] > 0 ? (bp ? Math.round(bp) + ' BPM · ' : '') + (ky ? B.midi.KEYS[ky[0]] + (ky[1] ? 'm' : '') + ' · ' : '') + clock(tm[0]) + ' / ' + clock(tm[1]) : '');
     setHtml(d.play, D.wanted() ? SVG_PAUSE : SVG_PLAY);
     var vw = (B.cfg.deck.vol * 100) + '%';
     if (d.shownVol !== vw) { d.shownVol = vw; d.fill.style.width = vw; }
@@ -574,6 +585,16 @@
       });
       bpmShow();
       sec(body, t('bpmSec'), add(bpmRow, bpmMul(0.5), bpmL, bpmMul(2)), bpmRe, h('div', 'note', t('bpmNote')));
+      // gamme du morceau (gamme automatique)
+      var keyL = h('div', 'secVal');
+      var keyShow = function () { var k2 = B.deck.keyFor(track); keyL.textContent = k2 ? B.midi.KEYS[k2[0]] + ' ' + t(k2[1] ? 'sc.minor' : 'sc.major') : t('keyNone'); };
+      var keyRe = h('button', 'btn', t('keyRedo'));
+      on(keyRe, 'click', function () {
+        if (B.deck.track !== track) B.deck.play(track);
+        setTimeout(function () { toast(B.deck.analyseKey(true) ? t('keyDone') : t('bpmWait'), 2500); keyShow(); B.midi.poll(); }, 400);
+      });
+      keyShow();
+      sec(body, t('keySec'), keyL, keyRe);
       var hideB = h('button', 'btn danger', t('trackHide'));
       on(hideB, 'click', function () { B.deck.hide(track, true); sh.close(); toast(t('trackHidden'), 3000); });
       sec(body, t('trackHideSec'), hideB, h('div', 'note', t('trackHideNote')));
@@ -692,6 +713,75 @@
     }
     if (on) { if (mode) send(mode); return; }
     if (forSec) duckT = setTimeout(function () { duckT = null; send(0); }, forSec * 1000); else send(0);
+  }
+
+  // ====================== BPM control ======================
+  // Une case : le tempo en grand, un voyant qui bat les temps (rouge sur le 1),
+  // − / + pour le tempo, SYNC pour recaler les clips à la main.
+  function bpmDom() {
+    var d = { el: h('div', 'bpmc'), val: h('div', 'bcVal'), tag: h('div', 'bcTag'), dot: h('div', 'bcDot') };
+    add(d.el, d.tag, d.dot, d.val, add(h('div', 'bcRow'), cmdBtn('bcBtn', 'bminus', '\u2212'), cmdBtn('bcBtn bcSync', 'bsync', 'SYNC'), cmdBtn('bcBtn', 'bplus', '+')));
+    return d;
+  }
+  function bpmPaint(d) {
+    var v = B.midi.bpm(), lock = B.midi.musicLocked();
+    setText(d.val, Math.abs(v - Math.round(v)) < 0.05 ? String(Math.round(v)) : v.toFixed(1));
+    setText(d.tag, lock ? t(B.deck.manual() ? 'bcManual' : 'bcMusic') : 'BPM');
+  }
+  // Voyant des temps et valeur affichée : rafraîchis 20 fois par seconde, seulement si la page a une case BPM control.
+  function bpmTick() {
+    if (document.hidden || !B.cfg) return;
+    var ph, got = false;
+    page().pads.forEach(function (p, i) {
+      if (!p || p.type !== 'bpm') return;
+      if (!got) { ph = B.midi.phase(); got = true; }
+      var d = pads[i].bc, cls = 'bcDot', b;
+      if (ph !== null) { b = Math.floor(ph); if (ph - b < 0.22) cls += ((b % 4) + 4) % 4 === 0 ? ' on bar' : ' on'; }
+      if (d.dot.className !== cls) d.dot.className = cls;
+      bpmPaint(d);
+    });
+  }
+  function bpmDown(i, key, target) {
+    var cmd = null, e = target, d = pads[i].bc;
+    while (e && e !== el.grid && !cmd) { cmd = e.getAttribute && e.getAttribute('data-cmd'); if (!cmd) e = e.parentNode; }
+    if (!cmd) return;
+    buzz();
+    var hd = held[key] = { pad: page().pads[i], i: i, s: -1, pg: B.cfg.cur, view: pads[i], bc: { t: null } };
+    e.className = e.className.replace(/ hit/g, '') + ' hit';
+    setTimeout(function () { e.className = e.className.replace(/ hit/g, ''); }, 160);
+    if (cmd === 'bsync') {
+      // le sync part dès l'appui : c'est l'instant du toucher qui compte
+      B.midi.resync();
+      // appui long : on oublie le calage manuel, y compris celui qu'on vient de faire
+      hd.bc.t = setTimeout(function () {
+        hd.bc.t = null;
+        buzz();
+        toast(t(B.midi.unsync() ? 'bcReset' : 'bcNoManual'), 2500);
+        bpmPaint(d);
+      }, 700);
+    } else {
+      var dir = cmd === 'bplus' ? 1 : -1, n = 0;
+      B.midi.nudge(dir);
+      // tenu : ça défile, puis ça accélère
+      hd.bc.t = setTimeout(function rep() {
+        n++;
+        B.midi.nudge(dir * (n > 10 ? 5 : 1));
+        bpmPaint(d);
+        hd.bc.t = setTimeout(rep, 90);
+      }, 420);
+    }
+    bpmPaint(d);
+  }
+  function editBpm(ref) {
+    var pad = refGet(ref);
+    sheet('BPM CONTROL', function (body, sh) {
+      sec(body, '', h('div', 'note', t('bcHelp')));
+      sec(body, t('color'), swatches(pad.color, function (c) { pad.color = c; renderGrid(); B.save(); }));
+      var move = h('button', 'btn', t('move')), clear = h('button', 'btn gap danger', t('clear'));
+      on(move, 'click', function () { sh.close(); S.moving = { ref: ref, pad: pad }; renderAll(); });
+      on(clear, 'click', function () { ask(t('askClear', 'BPM CONTROL'), t('doClear'), function () { refSet(ref, null); sh.close(); }); });
+      sec(body, t('padSec'), move, clear);
+    }, function () { B.saveNow(); renderAll(); });
   }
 
   // ====================== Micro ======================
@@ -822,6 +912,18 @@
     gauge(hd.view.inn.getBoundingClientRect(), hd.pad.color, a.get(), a.label(), a.name);
   }
   function adjHide() { el.adj.className = ''; }
+  // Jauge discrète : une fine barre au-dessus de l'élément, sans assombrir l'écran (clavier).
+  function gaugeMini(r, color, v, txt) {
+    var m = el.adjMini, st = m.style, w = Math.min(280, r.width - 16);
+    st.width = w + 'px';
+    st.left = Math.round(r.left + (r.width - w) / 2) + 'px';
+    st.top = Math.max(4, Math.round(r.top - 34)) + 'px';
+    m.firstChild.style.width = Math.round(Math.max(0, Math.min(1, v)) * 100) + '%';
+    m.firstChild.style.background = color;
+    m.lastChild.textContent = txt;
+    m.className = 'on';
+  }
+  function gaugeMiniHide() { el.adjMini.className = ''; }
   function adjMove(hd, y) {
     var a = hd.adj, pad = hd.pad;
     if (!a.on) {
@@ -845,6 +947,7 @@
     var cell = page().pads[i], s = -1, pad = cell;
     if (!cell) return;
     if (B.ROWS[cell.type]) { widgetTap(target); return; }
+    if (cell.type === 'bpm') { bpmDown(i, key, target); return; }
     if (cell.type === 'hub') { s = subIndex(target); pad = s >= 0 ? cell.subs[s] : null; if (!pad) return; }
     var type = pad.type || 'sample';
     if (type === 'sample' && !A.buffers[pad.sample]) return;
@@ -887,6 +990,7 @@
     if (!hd) return;
     delete held[key];
     adjEnd(hd);
+    if (hd.bc) { if (hd.bc.t) clearTimeout(hd.bc.t); return; }
     var type = hd.pad.type || 'sample';
     if (type === 'fx') { if (hd.pad.mode !== 'toggle') A.padFx(hd.pad, false); }
     else if (type === 'midi') { if (!hd.adj || !hd.adj.on) B.midi.toggle(hd.pad, hd.pg); }
@@ -900,6 +1004,7 @@
     if (!hd) return;
     delete held[key];
     adjEnd(hd);
+    if (hd.bc) { if (hd.bc.t) clearTimeout(hd.bc.t); return; }
     var pad = hd.pad, type = pad.type || 'sample';
     if (type === 'fx') A.padFx(pad, !!hd.was && pad.mode === 'toggle');
     else if (type === 'midi') { /* rien n'a encore été lancé */ }
@@ -1552,6 +1657,10 @@
       big('deck', t('newDeck'), t('noteDeck'), function () { widget('deck', t('typeDeck'), '#37474F'); });
       big('player', 'PHONE CONTROL', t('notePlayer'), function () { widget('player', 'PHONE CONTROL', '#2E7D32'); });
       big('keys', t('typeKeys'), t('noteKeys'), function () { widget('keys', t('typeKeys'), '#263238', B.midiUI.newKeys()); });
+      big('bpm', 'BPM CONTROL', t('noteBpm'), function () {
+        pg.pads[i] = { id: B.uid('p'), type: 'bpm', name: 'BPM', color: '#212121' };
+        B.saveNow(); sh.close(); renderAll();
+      });
       big('hub', t('newHub'), t('noteHub'), function () {
         pg.pads[i] = { id: B.uid('p'), type: 'hub', name: '', color: '#000000', subs: [null, null, null, null] };
         B.saveNow(); sh.close(); renderAll();
@@ -1694,6 +1803,7 @@
     var pi = ref.pi, i = ref.i, pad = refGet(ref);
     if (!pad) return;
     if (pad.type === 'midi') { B.midiUI.edit(ref); return; }
+    if (pad.type === 'bpm') { editBpm(ref); return; }
     if (pad.type === 'keys') { B.midiUI.editKeys(ref); return; }
     if (B.ROWS[pad.type]) { editWidget(pi, i); return; }
     var type = pad.type || 'sample';
@@ -2148,7 +2258,9 @@
         check(t('syncMode'), B.cfg.sync, function (v) { B.cfg.sync = v; B.save(); if (v) B.deck.analyse(); B.midi.poll(); }),
         h('div', 'note', t('syncNote')),
         check(t('fxSync'), B.cfg.fxSync, function (v) { B.cfg.fxSync = v; B.save(); A.refx(); }),
-        h('div', 'note', t('fxSyncNote')));
+        h('div', 'note', t('fxSyncNote')),
+        check(t('autoKey'), B.cfg.autoKey, function (v) { B.cfg.autoKey = v; B.save(); if (v) B.deck.analyseKey(); B.midi.poll(); }),
+        h('div', 'note', t('autoKeyNote')));
 
       setsSection(body, function () { sh.close(); openMenu(); });
 
@@ -2227,7 +2339,7 @@
   function fatal(msg) { el.busyTxt.textContent = msg; el.busy.style.display = 'flex'; }
 
   function boot() {
-    ['grid', 'tabs', 'toast', 'busy', 'busyTxt', 'fx', 'rec', 'recBox', 'recWave', 'recTxt', 'recHint', 'recBin', 'adj', 'adjBox', 'adjPie', 'adjTxt', 'adjName', 'fxBand', 'fxLbl', 'fxBtn', 'menuBtn', 'stopBtn', 'editBtn', 'editLbl', 'hint', 'fileAudio', 'fileConfig']
+    ['grid', 'tabs', 'toast', 'busy', 'busyTxt', 'fx', 'rec', 'recBox', 'recWave', 'recTxt', 'recHint', 'recBin', 'adj', 'adjMini', 'adjBox', 'adjPie', 'adjTxt', 'adjName', 'fxBand', 'fxLbl', 'fxBtn', 'menuBtn', 'stopBtn', 'editBtn', 'editLbl', 'hint', 'fileAudio', 'fileConfig']
       .forEach(function (id) { el[id] = $(id); });
     el.fxFill = el.fx.querySelector('.fill');
     el.recBin.innerHTML = BIN_SVG;
@@ -2252,6 +2364,7 @@
       B.deck.onChange = deckPaintAll;
       B.deck.load();
       setInterval(playerPoll, 1000);
+      setInterval(bpmTick, 50);
       on(document, 'visibilitychange', function () { playerPoll(); if (!document.hidden) B.deck.pump(); });
       return loadBuffers();
     })['catch'](function (e) {
@@ -2262,7 +2375,9 @@
   // Boîte à outils pour les modules d'interface chargés après celui-ci (midiui.js).
   B.ui = { h: h, add: add, on: on, sheet: sheet, sec: sec, choice: choice, check: check, rangeS: rangeS, swatches: swatches, field: field,
     toast: toast, ask: ask, buzz: buzz, ink: ink, refGet: refGet, refSet: refSet, renderAll: renderAll, state: S };
-  B.ui.playSvg = SVG_PLAY; B.ui.pauseSvg = SVG_PAUSE; B.ui.gauge = gauge; B.ui.gaugeHide = adjHide;
+  B.ui.playSvg = SVG_PLAY; B.ui.pauseSvg = SVG_PAUSE; B.ui.gauge = gauge; B.ui.gaugeHide = adjHide; B.ui.gaugeMini = gaugeMini; B.ui.gaugeMiniHide = gaugeMiniHide;
+  // gamme automatique : quand la gamme change, les noms des touches et des notes suivent
+  B.midi.onKey = function () { if (B.cfg) renderGrid(); };
 
   if (document.readyState === 'loading') on(document, 'DOMContentLoaded', boot); else boot();
 })(window.Boucan);

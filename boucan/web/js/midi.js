@@ -25,19 +25,23 @@
   function pick(a) { return a[rnd(a.length)]; }
 
   // ====================== Gamme ======================
-  M.scale = function () { return M.SCALES[cf().scale] || M.SCALES.minor; };
+  // Gamme en vigueur : celle du réglage, ou celle du morceau qui joue (gamme automatique).
+  var effKey = null, MINORS = ['minor', 'pentam', 'dorian', 'phryg', 'harm', 'blues'];
+  function root() { return effKey ? effKey.root : cf().root; }
+  M.scale = function () { return M.SCALES[effKey ? effKey.scale : cf().scale] || M.SCALES.minor; };
+  M.key = function () { return effKey ? { root: effKey.root, scale: effKey.scale, auto: true } : { root: cf().root, scale: cf().scale, auto: false }; };
   // nombre de lignes d'une grille mélodique : deux octaves de la gamme, plus la tonique du haut
   M.rows = function () { return M.scale().length * 2 + 1; };
   function semi(n) {
     var sc = M.scale(), L = sc.length, k = ((n % L) + L) % L;
     return sc[k] + 12 * Math.floor(n / L);
   }
-  M.noteName = function (n) { return M.KEYS[(((cf().root + semi(n)) % 12) + 12) % 12]; };
+  M.noteName = function (n) { return M.KEYS[(((root() + semi(n)) % 12) + 12) % 12]; };
   M.isRoot = function (n) { var L = M.scale().length; return ((n % L) + L) % L === 0; };
   // n : degré dans la gamme (0 = tonique) ; oct : octave de départ de l'instrument
   M.freq = function (n, oct) {
-    if (oct <= 1 && cf().root < 5) oct++; // les basses restent dans une zone qui s'entend
-    return 440 * Math.pow(2, (12 * (oct + 1) + cf().root + semi(n) - 69) / 12);
+    if (oct <= 1 && root() < 5) oct++; // les basses restent dans une zone qui s'entend
+    return 440 * Math.pow(2, (12 * (oct + 1) + root() + semi(n) - 69) / 12);
   };
 
   // ====================== Instruments ======================
@@ -341,7 +345,7 @@
   var active = {};  // id de case -> { pad, page }
   var maps = {};    // id de case -> pour chaque voix, notes rangées par pas
   var timer = null, nextTick = 0, nextTime = 0, lastTick = 0, lastTime = 0, lastRun = 0;
-  var bpmNow = 0, bk = 1, bkOn = false, bkTime = 0.9;
+  var bpmNow = 0, bk = 1, bkOn = false, bkTime = 0.9, snap = false;
 
   // Tempo en vigueur : celui du réglage, ou celui de la musique en mode sync.
   M.bpm = function () { return bpmNow || cf().bpm; };
@@ -406,7 +410,12 @@
       // calage sur la musique : la position dans le morceau donne le temps exact de chaque tick
       var td = 60 / (m.bpm * m.rate) / 4, mt = (m.pos - m.off) / (60 / m.bpm) * 4, ideal = now + (nextTick - mt) * td;
       // saut dans le morceau, autre morceau, premier calage : on se replace d'un coup
-      if (ideal < now - 0.03 || ideal > now + ahead + td * 1.6) { nextTick = Math.ceil(mt + 0.03 / td); ideal = now + (nextTick - mt) * td; }
+      if (snap) {
+        // SYNC à la main : on repart du temps qu'on vient de taper, même s'il est passé de quelques millisecondes
+        snap = false;
+        nextTick = Math.floor(mt + 0.5);
+        ideal = Math.max(now, now + (nextTick - mt) * td);
+      } else if (ideal < now - 0.03 || ideal > now + ahead + td * 1.6) { nextTick = Math.ceil(mt + 0.03 / td); ideal = now + (nextTick - mt) * td; }
       nextTime = ideal;
     } else if (nextTime < now - 0.25) nextTime = now + 0.02; // l'horloge a été gelée (appli en arrière-plan) : on repart d'ici
     while (nextTime < now + ahead) {
@@ -469,6 +478,47 @@
     var before = M.bpm();
     if (!timer) tempo(music() || !bpmNow ? 0 : 1);
     if (Math.abs(M.bpm() - before) > 0.3 && A.refx) A.refx();
+    // gamme automatique : on garde la famille choisie (mineure, penta…) si elle va avec le morceau
+    var k = B.cfg && B.cfg.autoKey && B.deck && B.deck.keyNow ? B.deck.keyNow() : null, nk = null, sc = cf().scale;
+    if (k) nk = { root: k[0], scale: k[1] ? (MINORS.indexOf(sc) >= 0 ? sc : 'minor') : (sc === 'major' || sc === 'pentaM' ? sc : 'major') };
+    if ((nk && nk.root) + ':' + (nk && nk.scale) !== (effKey && effKey.root) + ':' + (effKey && effKey.scale)) {
+      effKey = nk;
+      if (M.onKey) M.onKey();
+    }
+  };
+
+  // ====================== BPM control ======================
+  M.musicLocked = function () { return !!music(); };
+  // − / + : en mode sync sur une musique, corrige le tempo du morceau au dixième ;
+  // sinon change le tempo réglé, d'un BPM.
+  M.nudge = function (d) {
+    var m = music(), v;
+    if (m) {
+      v = Math.round((m.bpm + d * 0.1) * 10) / 10;
+      if (B.deck.setBpm(v)) bpmNow = v * m.rate;
+    } else {
+      cf().bpm = Math.max(60, Math.min(200, Math.round(cf().bpm + d)));
+      bpmNow = cf().bpm;
+      B.save();
+    }
+    if (A.refx) A.refx();
+  };
+  // SYNC : les clips repartent du début à cet instant. Sur une musique, ce calage
+  // devient le premier temps du morceau, et il est gardé.
+  M.resync = function () {
+    var m = music(), now = ctx().currentTime;
+    // le premier temps tombe pile à l'instant du toucher, et on le joue aussitôt
+    if (m) { B.deck.setOff(m.pos); snap = true; }
+    else if (timer) { nextTick = 0; nextTime = now; }
+    if (timer) run();
+  };
+  // Appui long sur SYNC : on oublie le calage manuel, retour à l'analyse automatique.
+  M.unsync = function () { return !!music() && B.deck.resetManual(); };
+  // Où en est le temps (en temps, à virgule), pour le voyant : horloge des clips, ou musique en mode sync.
+  M.phase = function () {
+    if (timer) return (lastTick + (ctx().currentTime - lastTime) / tickDur()) / 4;
+    var m = music();
+    return m ? (m.pos - m.off) / (60 / m.bpm) : null;
   };
   // Durée (secondes) ramenée à la division du temps la plus proche : 1/4, 1/3, 1/2, 3/4, 1, 2 temps.
   M.div = function (sec, max) {
