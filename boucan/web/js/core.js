@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.9';
+  B.VERSION = '2.10';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.MAX_SETS = 12;
@@ -913,10 +913,10 @@
       if (typeof bv[2] === 'number' && typeof bv[3] === 'number') cfg.deck.bpm[bkk].push(num(bv[2], 120, 40, 240), num(bv[3], 0, 0, 30));
       bn++;
     }
-    // gamme analysée des morceaux, par nom de fichier : [tonique 0..11, 1 si mineur]
+    // gamme analysée des morceaux, par nom de fichier : [tonique 0..11, mode (0 majeur, 1 mineur, 2 mineur harmonique), version de l'analyse]
     cfg.deck.key = {};
     var kys = dk.key && typeof dk.key === 'object' ? dk.key : {}, kn = 0, kyk;
-    for (kyk in kys) if (kn < 5000 && kys[kyk] instanceof Array) { cfg.deck.key[kyk] = [Math.floor(num(kys[kyk][0], 0, 0, 11)), kys[kyk][1] ? 1 : 0]; kn++; }
+    for (kyk in kys) if (kn < 5000 && kys[kyk] instanceof Array) { cfg.deck.key[kyk] = [Math.floor(num(kys[kyk][0], 0, 0, 11)), Math.floor(num(kys[kyk][1], 0, 0, 2)), Math.floor(num(kys[kyk][2], 1, 1, 99))]; kn++; }
     var hid = dk.hidden && typeof dk.hidden === 'object' ? dk.hidden : {}, hn = 0, hk;
     for (hk in hid) if (hn < 5000 && hid[hk]) { cfg.deck.hidden[hk] = 1; hn++; }
     // points de départ des morceaux (par nom de fichier) : s = seconde de départ, f = fondu d'entrée

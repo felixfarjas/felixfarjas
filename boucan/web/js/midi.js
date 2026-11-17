@@ -137,7 +137,8 @@
   M.GROUPS = ['drum', 'bass', 'lead', 'keys'];
 
   // ====================== Voies de mixage ======================
-  var bus = null, chans = {}, live = 0;
+  // notes en cours (voix de synthé), plafonnées ; LEAD : avance donnée aux notes jouées au doigt
+  var bus = null, chans = {}, notes = [], MAX_NOTES = 40, LEAD = 0.015;
   function ctx() { return A.ctx; }
   function getBus() {
     if (!bus) { bus = ctx().createGain(); bus.gain.value = 0.8; bus.connect(A.bus); }
@@ -169,7 +170,9 @@
   // ====================== Synthé ======================
   // Joue une note. dur null : note tenue jusqu'à off(). Renvoie { off(t) }.
   function noteOn(c, P, f, t, dur, vel) {
-    if (live > 28) return null; // garde-fou pour les téléphones lents
+    // garde-fou pour les téléphones lents : au-delà de MAX_NOTES, la plus ancienne
+    // note s'éteint en un éclair pour laisser la place (une note n'est jamais refusée)
+    while (notes.length >= MAX_NOTES) notes.shift().kill(ctx().currentTime);
     var x = ctx(), vca = x.createGain(), inp = vca, amp = P.amp, pk = vel * P.gain, os = [], i, o, mg = null, lg = null;
     var te = dur === null ? null : t + (amp.s === 0 ? Math.max(dur, amp.d * 1.5) : dur);
     vca.gain.setValueAtTime(0, t);
@@ -221,16 +224,28 @@
     }
     vca.connect(c.inp);
     for (i = 0; i < os.length; i++) os[i].start(t);
-    live++;
     var h = { done: false, f: f, flt: inp === vca ? null : inp, flt2: P.flt && P.flt.p4 ? inp : null };
+    notes.push(h);
     h.off = function (at) {
       if (h.done) return;
       h.done = true;
+      // jamais avant le début de la note : un relâché très rapide effacerait son attaque (note muette)
+      at = Math.max(at, t + 0.004);
       if (dur === null) vca.gain.cancelScheduledValues(at);
       vca.gain.setTargetAtTime(0, at, amp.r / 3 + 0.002);
       for (var k = 0; k < os.length; k++) { try { os[k].stop(at + amp.r * 1.6 + 0.05); } catch (e) {} }
     };
-    os[os.length - 1].onended = function () { live--; try { vca.disconnect(); } catch (e) {} };
+    // extinction express (place pour une nouvelle note)
+    h.kill = function (at) {
+      h.done = true;
+      try { vca.gain.cancelScheduledValues(at); vca.gain.setTargetAtTime(0, at, 0.006); } catch (e) {}
+      for (var k = 0; k < os.length; k++) { try { os[k].stop(at + 0.05); } catch (e2) {} }
+    };
+    os[os.length - 1].onended = function () {
+      var k = notes.indexOf(h);
+      if (k >= 0) notes.splice(k, 1);
+      try { vca.disconnect(); } catch (e) {}
+    };
     if (te !== null) h.off(te);
     return h;
   }
@@ -480,7 +495,8 @@
     if (Math.abs(M.bpm() - before) > 0.3 && A.refx) A.refx();
     // gamme automatique : on garde la famille choisie (mineure, penta…) si elle va avec le morceau
     var k = B.cfg && B.cfg.autoKey && B.deck && B.deck.keyNow ? B.deck.keyNow() : null, nk = null, sc = cf().scale;
-    if (k) nk = { root: k[0], scale: k[1] ? (MINORS.indexOf(sc) >= 0 ? sc : 'minor') : (sc === 'major' || sc === 'pentaM' ? sc : 'major') };
+    // mineur harmonique : sa sensible (7e haussée) ne va avec aucune autre famille, on le prend tel quel
+    if (k) nk = { root: k[0], scale: k[1] === 2 ? 'harm' : k[1] ? (MINORS.indexOf(sc) >= 0 ? sc : 'minor') : (sc === 'major' || sc === 'pentaM' ? sc : 'major') };
     if ((nk && nk.root) + ':' + (nk && nk.scale) !== (effKey && effKey.root) + ':' + (effKey && effKey.scale)) {
       effKey = nk;
       if (M.onKey) M.onKey();
@@ -545,7 +561,7 @@
 
   // Écoute d'une note ou d'une frappe pendant l'édition.
   M.preview = function (pad, vi, d) {
-    var v = pad.voices[vi], I = M.INST[v.inst], c = chan(pad.id + ':' + vi, v.vol, I.drive(v.m)), t = ctx().currentTime + 0.01;
+    var v = pad.voices[vi], I = M.INST[v.inst], c = chan(pad.id + ':' + vi, v.vol, I.drive(v.m)), t = ctx().currentTime + LEAD;
     A.resume(); A.unkill();
     if (I.kind === 'drum') drumHit(c, kitOf(v.inst), d, t, 1, v.m, 1);
     else noteOn(c, I.patch(v.m), M.freq(d, I.oct + (v.oct || 0)), t, 0.25, 0.9);
@@ -570,7 +586,9 @@
     var I = M.INST[pad.inst] || M.INST.pluck;
     A.resume(); A.unkill();
     M.keyOff(key);
-    held[key] = noteOn(chan(pad.id + ':k', pad.vol, I.drive(pad.m)), I.patch(pad.m), M.freq(n, I.oct + (pad.oct || 0)) * pitch(), ctx().currentTime, null, 0.9);
+    // la note démarre un poil dans le futur : à « maintenant », le moteur audio la traiterait
+    // en retard, et l'attaque du filtre (pluck…) serait déjà en partie passée, d'où un son étouffé
+    held[key] = noteOn(chan(pad.id + ':k', pad.vol, I.drive(pad.m)), I.patch(pad.m), M.freq(n, I.oct + (pad.oct || 0)) * pitch(), ctx().currentTime + LEAD, null, 0.9);
   };
   // Les réglages du clavier ont bougé pendant qu'on joue : le filtre des notes tenues suit le doigt.
   M.keyBend = function (pad) {

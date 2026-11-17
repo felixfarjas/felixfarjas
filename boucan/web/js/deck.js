@@ -453,11 +453,14 @@
   };
   D.manual = function () { var i = info(); return !!i && i.length >= 4; };
   // Gamme du morceau : [tonique 0..11, 1 si mineur].
+  // version de l'analyse : un résultat d'une version plus ancienne est refait (une fois)
+  var KEYV = 2;
+  function keyOk(k) { return !!k && k[2] === KEYV; }
   D.keyFor = function (t) { return cfg().key[D.key(t)] || null; };
   D.keyNow = function () { return D.track && want ? cfg().key[D.key(D.track)] || null : null; };
   D.analyseKey = function (force) {
     var t = D.track, b = t && bufs[t.id], k;
-    if (!b || (!force && cfg().key[D.key(t)])) return false;
+    if (!b || (!force && keyOk(cfg().key[D.key(t)]))) return false;
     k = keyOf(b);
     if (!k) return false;
     cfg().key[D.key(t)] = k;
@@ -501,12 +504,20 @@
     emit();
   }
 
-  // Détection de la gamme d'un morceau décodé. Renvoie [tonique 0..11 (0 = do), 1 si mineur / 0 si majeur], ou null.
-  //  1. 120 fenêtres réparties sur tout le morceau, ramenées à environ 11 kHz ;
-  //  2. spectre de chaque fenêtre, rangé par note (do, do#, ré…) entre 80 Hz et 2 kHz : le « chroma » ;
-  //  3. comparaison avec les profils de Krumhansl des 24 gammes majeures et mineures : la plus ressemblante gagne.
+  // Détection de la gamme d'un morceau décodé. Renvoie [tonique 0..11 (0 = do), mode, KEYV], mode :
+  // 0 majeur, 1 mineur, 2 mineur harmonique ; ou null.
+  //  1. 120 fenêtres réparties sur le morceau, ramenées à environ 11 kHz, spectre fin (1,3 Hz), « blanchi »
+  //     (chaque bin rapporté au niveau moyen autour) pour effacer souffle et frappes ;
+  //  2. l'accordage du morceau est mesuré (la = 432, 440, 446…) ;
+  //  3. saillance de chaque note de do 2 à do 6 : sa fondamentale plus ses harmoniques. Une vraie note
+  //     ressort ; la quinte ou la tierce qu'une note contient dans ses harmoniques, non (c'est ce qui
+  //     faisait glisser l'ancienne détection vers la gamme voisine) ;
+  //  4. on cherche l'ensemble de 7 notes (gamme diatonique ou mineure harmonique) qui contient le plus
+  //     de ces notes et le moins en dehors : c'est ce qui évite les fausses notes ;
+  //  5. pour cet ensemble, tonique majeure ou mineure (relative) : profils de Krumhansl et poids de la basse.
   var KMAJ = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
   var KMIN = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+  var DIA = [0, 2, 4, 5, 7, 9, 11], HARM = [0, 2, 3, 5, 7, 8, 11];
   function fft(re, im) {
     var n = re.length, i, j, k, len, half, step, a, wr, wi, tr, ti, ur, ui, x;
     for (i = 1, j = 0; i < n; i++) {
@@ -528,42 +539,95 @@
     }
   }
   function keyOf(buf) {
-    var N = 4096, DEC = Math.max(1, Math.round(buf.sampleRate / 11025)), fs = buf.sampleRate / DEC, span = N * DEC;
+    var N = 8192, DEC = Math.max(1, Math.round(buf.sampleRate / 11025)), fs = buf.sampleRate / DEC, span = N * DEC;
     var d = buf.getChannelData(0), n = d.length, FR = 120;
-    if (n < span * 6) return null;
-    var re = new Float32Array(N), im = new Float32Array(N), win = new Float32Array(N), chroma = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    var lo = Math.ceil(80 * N / fs), hi = Math.floor(2000 * N / fs), pc = [], f, i, k, q;
+    if (n < span * 4) return null;
+    var re = new Float32Array(N), im = new Float32Array(N), win = new Float32Array(N), mag = new Float32Array(N / 2 + 2);
+    var f, i, k, q, a0 = Math.floor(n * 0.03), a1 = Math.floor(n * 0.97) - span, h;
+    if (a1 <= a0) { a0 = 0; a1 = n - span; }
     for (i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1));
-    for (k = lo; k <= hi; k++) pc[k] = ((Math.round(12 * Math.log(k * fs / N / 440) / Math.LN2) + 9) % 12 + 12) % 12;
+    var NB = Math.floor(5000 * N / fs), wm = new Float32Array(NB + 2), P0 = 36, P1 = 84, NP = P1 - P0 + 1;
+    var frames = [], cs = 0, sn = 0;
     for (f = 0; f < FR; f++) {
-      var at = Math.floor((f + 0.5) / FR * (n - span)), fc = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], sum = 0;
+      var at = a0 + Math.floor((f + 0.5) / FR * (a1 - a0));
       for (i = 0; i < N; i++) {
-        var s = 0, b0 = at + i * DEC;
-        for (q = 0; q < DEC; q++) s += d[b0 + q];
-        re[i] = s / DEC * win[i]; im[i] = 0;
+        var s0 = 0, b0 = at + i * DEC;
+        for (q = 0; q < DEC; q++) s0 += d[b0 + q];
+        re[i] = s0 / DEC * win[i]; im[i] = 0;
       }
       fft(re, im);
-      for (k = lo; k <= hi; k++) fc[pc[k]] += Math.sqrt(re[k] * re[k] + im[k] * im[k]);
-      for (k = 0; k < 12; k++) sum += fc[k];
-      // chaque fenêtre pèse autant : un passage fort n'écrase pas le reste du morceau
-      if (sum > 1e-6) for (k = 0; k < 12; k++) chroma[k] += fc[k] / sum;
-    }
-    function corr(p, r) {
-      var ma = 0, mb = 0, sab = 0, saa = 0, sbb = 0, j2;
-      for (j2 = 0; j2 < 12; j2++) { ma += chroma[(j2 + r) % 12]; mb += p[j2]; }
-      ma /= 12; mb /= 12;
-      for (j2 = 0; j2 < 12; j2++) {
-        var xa = chroma[(j2 + r) % 12] - ma, xb = p[j2] - mb;
-        sab += xa * xb; saa += xa * xa; sbb += xb * xb;
+      for (k = 1; k <= NB + 1; k++) mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+      // spectre « blanchi » : chaque bin divisé par le niveau moyen autour (±30 bins), ce qui
+      // égalise graves et aigus et efface le souffle ; seuls les pics restent au-dessus de 1
+      var acc = 0, W = 30;
+      for (k = 1; k <= 2 * W + 1; k++) acc += mag[k];
+      for (k = 1; k <= NB; k++) {
+        var lo2 = k - W, hi2 = k + W;
+        if (lo2 > 1 && hi2 <= NB + 1) acc += mag[hi2] - mag[lo2 - 1];
+        var ln = acc / (2 * W + 1) + 1e-9, v = mag[k] / ln - 1;
+        wm[k] = v > 0 ? v : 0;
       }
+      // accordage : décalage des pics par rapport aux notes justes
+      for (k = 3; k < NB; k++) if (wm[k] > 2 && wm[k] >= wm[k - 1] && wm[k] >= wm[k + 1]) {
+        var x0 = 12 * Math.log(k * fs / N / 440) / Math.LN2;
+        cs += wm[k] * Math.cos(2 * Math.PI * x0); sn += wm[k] * Math.sin(2 * Math.PI * x0);
+      }
+      frames.push(new Float32Array(wm));
+    }
+    var tune = Math.atan2(sn, cs) / (2 * Math.PI);
+    // saillance de chaque note de C2 à C6 : sa fondamentale et ses 7 harmoniques suivantes
+    function at2(w, fr) { var c = fr * N / fs, c0 = Math.floor(c), m = 0, j; for (j = c0 - 1; j <= c0 + 2; j++) if (j > 0 && j <= NB && w[j] > m) m = w[j]; return m; }
+    var chroma = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], bass = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], sal = new Float32Array(NP), p, top;
+    for (f = 0; f < frames.length; f++) {
+      top = 0;
+      for (p = 0; p < NP; p++) {
+        var f0 = 440 * Math.pow(2, (P0 + p - 69 + tune) / 12), sv = 0;
+        for (h = 1; h <= 8; h++) sv += at2(frames[f], f0 * h) / h;
+        sal[p] = sv;
+        if (sv > top) top = sv;
+      }
+      if (top <= 0) continue;
+      // on ne garde que les notes nettement présentes dans la fenêtre (pics locaux, au moins 30 % de la plus forte)
+      var fsum = 0, keep = [];
+      for (p = 0; p < NP; p++) {
+        if (sal[p] < 0.3 * top || (p > 0 && sal[p - 1] > sal[p]) || (p < NP - 1 && sal[p + 1] > sal[p])) continue;
+        keep.push(p); fsum += sal[p];
+      }
+      for (k = 0; k < keep.length; k++) {
+        p = keep[k];
+        var pc = (P0 + p) % 12, wv = sal[p] / fsum;
+        chroma[pc] += wv;
+        if (P0 + p < 55) bass[pc] += wv;
+      }
+    }
+    var tot = 0, btot = 0;
+    for (k = 0; k < 12; k++) { tot += chroma[k]; btot += bass[k]; }
+    if (!(tot > 0)) return null;
+    for (k = 0; k < 12; k++) { chroma[k] /= tot; bass[k] /= btot || 1; }
+    // 4. l'ensemble de 7 notes qui colle le mieux
+    function setScore(shape, r0) {
+      var inS = 0, j;
+      for (j = 0; j < 7; j++) inS += chroma[(shape[j] + r0) % 12];
+      return inS - (1 - inS);
+    }
+    var bestD = -9, rD = 0, bestH = -9, rH = 0, r1, sc;
+    for (r1 = 0; r1 < 12; r1++) {
+      sc = setScore(DIA, r1); if (sc > bestD) { bestD = sc; rD = r1; }
+      sc = setScore(HARM, r1); if (sc > bestH) { bestH = sc; rH = r1; }
+    }
+    function corr(pf, r2) {
+      var ma = 0, mb = 0, sab = 0, saa = 0, sbb = 0, j;
+      for (j = 0; j < 12; j++) { ma += chroma[(j + r2) % 12]; mb += pf[j]; }
+      ma /= 12; mb /= 12;
+      for (j = 0; j < 12; j++) { var xa = chroma[(j + r2) % 12] - ma, xb = pf[j] - mb; sab += xa * xb; saa += xa * xa; sbb += xb * xb; }
       return sab / Math.sqrt(saa * sbb || 1);
     }
-    var best = -2, out = null, r2, c;
-    for (r2 = 0; r2 < 12; r2++) {
-      c = corr(KMAJ, r2); if (c > best) { best = c; out = [r2, 0]; }
-      c = corr(KMIN, r2); if (c > best) { best = c; out = [r2, 1]; }
-    }
-    return out;
+    // mineur harmonique seulement si sa sensible (la 7e haussée) est nettement présente
+    if (bestH > bestD + 0.03) return [rH, 2, KEYV];
+    // 5. tonique : le majeur (rD) ou sa relative mineure (rD + 9)
+    var mi = (rD + 9) % 12;
+    var sMaj = corr(KMAJ, rD) + 0.6 * bass[rD], sMin = corr(KMIN, mi) + 0.6 * bass[mi];
+    return sMin > sMaj ? [mi, 1, KEYV] : [rD, 0, KEYV];
   }
 
   // Détection du tempo d'un morceau décodé. Renvoie [bpm, instant en secondes d'un premier temps de mesure].
@@ -660,7 +724,7 @@
         // mode sync : le tempo est analysé une fois, au premier décodage, puis gardé avec les étiquettes
         if (B.cfg.sync && !cfg().bpm[D.key(t)]) { try { cfg().bpm[D.key(t)] = tempoOf(buf); B.save(); } catch (e) {} }
         // gamme automatique : même principe, une seule analyse par morceau
-        if (B.cfg.autoKey && !cfg().key[D.key(t)]) { try { var ky = keyOf(buf); if (ky) { cfg().key[D.key(t)] = ky; B.save(); } } catch (e2) {} }
+        if (B.cfg.autoKey && !keyOk(cfg().key[D.key(t)])) { try { var ky = keyOf(buf); if (ky) { cfg().key[D.key(t)] = ky; B.save(); } } catch (e2) {} }
         done(out);
       }
       try {

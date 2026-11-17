@@ -442,9 +442,16 @@
     function bend(id, y) {
       var p = d.pad, live = p && p.live || [];
       if (d.y0[id] === undefined || !live.length) return;
-      var dv = (d.y0[id] - y) / 110, I = M.INST[p.inst];
-      if (Math.abs(dv) < 0.08 && !d.bent) return;
-      d.bent = true;
+      var I = M.INST[p.inst], dv;
+      // il faut un vrai geste vertical (26 px) : un toucher un peu tremblé joue juste la note,
+      // sans toucher au son. Le réglage part ensuite de là où le geste a commencé (pas de saut).
+      if (!d.bent) {
+        if (Math.abs(d.y0[id] - y) < 26) return;
+        d.bent = true;
+        d.y0[id] = y;
+        d.m0[id] = p.m.slice();
+      }
+      dv = (d.y0[id] - y) / 110;
       live.forEach(function (k2) { p.m[k2] = Math.round(Math.max(0, Math.min(1, d.m0[id][k2] + dv)) * 100) / 100; });
       M.keyBend(p);
       // jauge discrète au-dessus du clavier : elle ne cache pas les touches

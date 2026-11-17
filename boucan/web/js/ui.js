@@ -467,7 +467,7 @@
     // temps écoulé / durée, à droite du titre
     var tm = D.track ? D.times() : null;
     var bp = B.cfg.sync && D.track ? D.bpmOf(D.track) : 0, ky = B.cfg.autoKey && D.track ? D.keyFor(D.track) : null;
-    setText(d.time, D.loading() ? '\u2026' : tm && tm[1] > 0 ? (bp ? Math.round(bp) + ' BPM · ' : '') + (ky ? B.midi.KEYS[ky[0]] + (ky[1] ? 'm' : '') + ' · ' : '') + clock(tm[0]) + ' / ' + clock(tm[1]) : '');
+    setText(d.time, D.loading() ? '\u2026' : tm && tm[1] > 0 ? (bp ? Math.round(bp) + ' BPM · ' : '') + (ky ? B.midi.KEYS[ky[0]] + (ky[1] ? 'm' : '') + (ky[1] === 2 ? ' harm.' : '') + ' · ' : '') + clock(tm[0]) + ' / ' + clock(tm[1]) : '');
     setHtml(d.play, D.wanted() ? SVG_PAUSE : SVG_PLAY);
     var vw = (B.cfg.deck.vol * 100) + '%';
     if (d.shownVol !== vw) { d.shownVol = vw; d.fill.style.width = vw; }
@@ -587,7 +587,7 @@
       sec(body, t('bpmSec'), add(bpmRow, bpmMul(0.5), bpmL, bpmMul(2)), bpmRe, h('div', 'note', t('bpmNote')));
       // gamme du morceau (gamme automatique)
       var keyL = h('div', 'secVal');
-      var keyShow = function () { var k2 = B.deck.keyFor(track); keyL.textContent = k2 ? B.midi.KEYS[k2[0]] + ' ' + t(k2[1] ? 'sc.minor' : 'sc.major') : t('keyNone'); };
+      var keyShow = function () { var k2 = B.deck.keyFor(track); keyL.textContent = k2 ? B.midi.KEYS[k2[0]] + ' ' + t(['sc.major', 'sc.minor', 'sc.harm'][k2[1]] || 'sc.major') : t('keyNone'); };
       var keyRe = h('button', 'btn', t('keyRedo'));
       on(keyRe, 'click', function () {
         if (B.deck.track !== track) B.deck.play(track);
