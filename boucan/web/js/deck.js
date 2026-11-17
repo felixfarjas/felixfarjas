@@ -36,7 +36,8 @@
   }
   // Commande venue des notifications.
   B.deckCmd = function (cmd, arg) {
-    if (!B.cfg || !D.track) return;
+    // sans morceau en cours, lecture lance le premier de la liste (widget)
+    if (!B.cfg || (!D.track && cmd !== 'toggle' && cmd !== 'play')) return;
     if (cmd === 'toggle' || (cmd === 'play' && !want) || (cmd === 'pause' && want)) D.toggle();
     else if (cmd === 'next') D.next();
     else if (cmd === 'prev') D.prev();
@@ -192,7 +193,7 @@
   D.route = function () {
     if (!gain) return;
     try { gain.disconnect(); } catch (e) {}
-    gain.connect(A.target !== 'pads' ? A.fxIn : A.comp);
+    gain.connect(A.chM.inp);
   };
   D.setVol = function (v) {
     cfg().vol = v;
@@ -291,15 +292,44 @@
   }
 
   function auPlay() { var p = au.play(); if (p && p['catch']) p['catch'](function () {}); }
+  // Départ réglé (point de départ, fondu d'entrée) d'un morceau lu en flux : il reste muet
+  // jusqu'à être arrivé à son point de départ, puis entre en fondu. Plus besoin d'attendre le décodage.
+  var auG = null, pend = null, pendT = null;
+  function auLevel(v) {
+    if (!auG) return;
+    var now = A.ctx.currentTime;
+    A.freeze(auG.gain, now);
+    auG.gain.setValueAtTime(v, now);
+  }
+  function cueOpen() {
+    var p = pend, now = A.ctx.currentTime;
+    pend = null;
+    if (pendT) { clearTimeout(pendT); pendT = null; }
+    if (!p || !auG) return;
+    A.freeze(auG.gain, now);
+    A.fade(auG.gain, 0, 1, now, Math.max(0.03, p.f));
+  }
+  function cueCheck() {
+    if (!pend || mode !== 'stream' || D.track !== pend.t || !au) return;
+    if (au.readyState < 1) return;
+    // le fragment « #t= » n'a pas été suivi : on saute à la main (le son est encore coupé)
+    if (au.currentTime < pend.s - 0.4) { try { au.currentTime = pend.s; } catch (e) {} return; }
+    if (!au.paused && au.currentTime >= pend.s - 0.4) cueOpen();
+  }
   function ensureAu() {
     if (au) return;
     au = new Audio();
     au.crossOrigin = 'anonymous';
     au.preload = 'auto';
     try { au.preservesPitch = false; au.webkitPreservesPitch = false; } catch (e) {}
-    A.ctx.createMediaElementSource(au).connect(gain);
+    // auG : volume propre au flux, pour son entrée en fondu et le fondu croisé vers la mémoire
+    auG = A.ctx.createGain();
+    A.ctx.createMediaElementSource(au).connect(auG);
+    auG.connect(gain);
     au.addEventListener('ended', function () { if (mode === 'stream') D.next(true); }, false);
-    au.addEventListener('playing', function () { errs = 0; emit(); }, false);
+    au.addEventListener('playing', function () { errs = 0; cueCheck(); emit(); }, false);
+    au.addEventListener('timeupdate', cueCheck, false);
+    au.addEventListener('loadedmetadata', cueCheck, false);
     au.addEventListener('pause', emit, false);
     au.addEventListener('error', function () {
       if (mode !== 'stream') return;
@@ -316,6 +346,7 @@
       dogT = null;
       if (mode !== 'stream' || !want || !D.track || au.paused || au.currentTime !== at) return;
       au.src = D.base + 't/' + D.track.id;
+      pend = null; auLevel(1);
       var once = function () {
         au.removeEventListener('loadedmetadata', once, false);
         try { au.currentTime = at; } catch (e) {}
@@ -486,7 +517,7 @@
     var sec = Math.max(0, Math.min(0.999, f)) * d;
     // en lecture : fondu croisé de 0,4 s entre l'ancien et le nouvel endroit, sans à-coup
     if (mode === 'buf') { var on = bOn; if (on) fadeOff(XFADE); else bStop(); bpos = sec; if (on) bStart(rateK, XFADE, true); }
-    else if (au) { try { au.currentTime = sec; } catch (e) {} }
+    else if (au) { if (pend) cueOpen(); try { au.currentTime = sec; } catch (e) {} }
     emit();
   };
 
@@ -494,13 +525,27 @@
   // mémoire, à la même position.
   function adopt() {
     if (mode !== 'stream' || !D.track || !bufs[D.track.id] || rampT || rampI) return;
-    var on = ePlaying(), pos = au ? au.currentTime || 0 : 0;
+    var on = ePlaying(), pos = au ? au.currentTime || 0 : 0, p = pend, now = A.ctx.currentTime, a = au;
     if (dogT) { clearTimeout(dogT); dogT = null; }
     mode = 'buf';
     cur = bufs[D.track.id];
-    bpos = Math.min(pos, cur.duration - 0.05);
-    if (on) bStart(rateK);
-    try { au.pause(); } catch (e) {}
+    if (p) {
+      // le flux n'était pas encore arrivé à son point de départ : la mémoire part de là, avec le fondu prévu
+      pend = null;
+      if (pendT) { clearTimeout(pendT); pendT = null; }
+      bpos = Math.min(p.s, Math.max(0, cur.duration - 1));
+      if (want) bStart(rateK, p.f, true);
+      try { a.pause(); } catch (e0) {}
+      auLevel(1);
+    } else {
+      bpos = Math.min(pos, cur.duration - 0.05);
+      if (on) {
+        // fondu croisé très court du flux vers la mémoire : le passage ne s'entend pas
+        bStart(rateK, 0.08, true);
+        try { eqFade(auG.gain, false, A.freeze(auG.gain, now), now, 0.08); } catch (e1) {}
+        setTimeout(function () { if (mode !== 'stream') { try { a.pause(); } catch (e2) {} auLevel(1); } }, 140);
+      } else { try { a.pause(); } catch (e3) {} }
+    }
     emit();
   }
 
@@ -721,11 +766,14 @@
         have[waveKey(t)] = 1;
         B.db.put('kv', waveKey(t), out)['catch'](function () {});
         if (wanted(t) && fits(t)) bufs[t.id] = buf;
-        // mode sync : le tempo est analysé une fois, au premier décodage, puis gardé avec les étiquettes
-        if (B.cfg.sync && !cfg().bpm[D.key(t)]) { try { cfg().bpm[D.key(t)] = tempoOf(buf); B.save(); } catch (e) {} }
-        // gamme automatique : même principe, une seule analyse par morceau
-        if (B.cfg.autoKey && !keyOk(cfg().key[D.key(t)])) { try { var ky = keyOf(buf); if (ky) { cfg().key[D.key(t)] = ky; B.save(); } } catch (e2) {} }
+        // le morceau part d'abord ; les analyses (une seule fois par morceau, gardées avec les étiquettes) viennent juste après
         done(out);
+        setTimeout(function () {
+          // mode sync : le tempo
+          if (B.cfg.sync && !cfg().bpm[D.key(t)]) { try { cfg().bpm[D.key(t)] = tempoOf(buf); B.save(); } catch (e) {} }
+          // gamme automatique
+          if (B.cfg.autoKey && !keyOk(cfg().key[D.key(t)])) { try { var ky = keyOf(buf); if (ky) { cfg().key[D.key(t)] = ky; B.save(); emit(); } } catch (e2) {} }
+        }, 400);
       }
       try {
         var p = A.ctx.decodeAudioData(ab, ok, fail);
@@ -795,23 +843,22 @@
       // déjà décodé (c'était le « suivant ») : départ immédiat et exact
       mode = 'buf'; cur = bufs[t.id]; bpos = Math.min(cu.s, Math.max(0, cur.duration - 1));
       if (xs) { bStart(0.07, Math.max(0.15, cu.f)); eRamp(rateK, xs * 0.6, emit); } else bStart(rateK, cu.f, true);
-    } else if ((cu.s > 0 || cu.f > 0) && fits(t) && !bad[t.id]) {
-      // départ ou fondu réglé : le flux saute mal et rate le fondu, on attend donc le décodage
-      mode = 'wait'; cur = null;
     } else {
+      // lu en flux le temps du décodage : il démarre tout de suite, directement à son point de départ
+      // (fragment « #t= » de l'adresse), muet jusqu'à y être, puis avec son fondu d'entrée
       mode = 'stream'; cur = null;
       ensureAu();
-      au.src = D.base + 't/' + t.id;
+      pend = null;
+      if (pendT) { clearTimeout(pendT); pendT = null; }
+      if (cu.s > 0 || cu.f > 0) {
+        pend = { t: t, s: cu.s, f: cu.f };
+        auLevel(0);
+        // filet de sécurité : s'il n'a jamais signalé son arrivée, on ouvre quand même
+        pendT = setTimeout(function () { pendT = null; if (pend && pend.t === t) cueOpen(); }, 2500);
+      } else auLevel(1);
+      au.src = D.base + 't/' + t.id + (cu.s > 0 ? '#t=' + cu.s.toFixed(2) : '');
       try { au.playbackRate = xs ? 0.07 : rateK; } catch (e2) {}
       auPlay();
-      if (cu.s > 0) {
-        var jump = function () {
-          au.removeEventListener('loadedmetadata', jump, false);
-          if (D.track === t && mode === 'stream') { try { au.currentTime = cu.s; } catch (e3) {} }
-        };
-        au.addEventListener('loadedmetadata', jump, false);
-      }
-      if (cu.f > 0) { try { var n0 = A.ctx.currentTime; A.freeze(gain.gain, n0); A.fade(gain.gain, 0, vol(), n0, cu.f); } catch (e4) {} }
       if (xs) eRamp(rateK, xs * 0.6, function () { adopt(); emit(); });
     }
     showWave(t);

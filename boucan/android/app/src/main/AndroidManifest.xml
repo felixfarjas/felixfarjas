@@ -50,6 +50,38 @@
             </intent-filter>
         </service>
 
+        <!-- Widgets de l'écran d'accueil : lecteur de musique, grille de cases. -->
+        <receiver
+            android:name=".MusicWidget"
+            android:exported="false"
+            android:label="@string/w_music">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/w_music" />
+        </receiver>
+        <receiver
+            android:name=".PadWidget"
+            android:exported="false"
+            android:label="@string/w_pads">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/w_pads" />
+        </receiver>
+        <!-- Relais invisible d'un widget quand l'appli est fermée : il la relance. -->
+        <activity
+            android:name=".WidgetTap"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- Sert le fichier .boucan exporté aux apps de partage (WhatsApp, Bluetooth…). -->
         <provider
             android:name=".ExportProvider"

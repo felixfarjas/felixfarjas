@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Boucan</string>
+    <string name="w_music">Boucan · lecteur</string>
+    <string name="w_music_desc">Le morceau en cours, avec lecture, précédent et suivant.</string>
+    <string name="w_pads">Boucan · cases</string>
+    <string name="w_pads_desc">Tes cases (samples, FX, clips MIDI) en petit. Touche le nom de la page pour passer à la suivante.</string>
 </resources>

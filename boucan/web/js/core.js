@@ -12,7 +12,7 @@
     };
   }
 
-  B.VERSION = '2.10';
+  B.VERSION = '2.11';
   B.COLORS = ['#E53935', '#FB8C00', '#FDD835', '#43A047', '#00ACC1', '#1E88E5', '#8E24AA', '#EC407A', '#ECEFF1', '#546E7A'];
   B.MAX_PAGES = 8;
   B.MAX_SETS = 12;
@@ -335,81 +335,90 @@
       return b;
     }
 
-    // bus : entrée des sons de la soundboard (cases, micro) ; fxIn : entrée de la chaîne d'effets
-    var bus = A.bus = gain(1), fxIn = A.fxIn = gain(1), cutG = A.cutG = gain(1);
-    var hp = A.hp = filter('highpass', 20), lp = A.lp = filter('lowpass', 20000);
-    var clean = A.clean = gain(1), mix = gain(1), dry = A.dry = gain(1);
-    var mHp = filter('highpass', 600), mLp = filter('lowpass', 2800);
-    var mSh = ctx.createWaveShaper(); mSh.curve = driveCurve(6, 0.8);
-    var mega = A.mega = gain(0);
-    var dSh = ctx.createWaveShaper(); dSh.curve = driveCurve(25, 0.45);
-    var disto = A.disto = gain(0);
-    var trem = A.trem = gain(1), kill = A.kill = gain(1);
-
-    var comp = A.comp = ctx.createDynamicsCompressor();
+    var comp = A.comp = ctx.createDynamicsCompressor(), kill = A.kill = gain(1);
     comp.threshold.value = -10; comp.knee.value = 10; comp.ratio.value = 12;
     comp.attack.value = 0.002; comp.release.value = 0.2;
-
-    var revSend = A.revSend = gain(0), conv = ctx.createConvolver();
-    conv.buffer = impulse(ctx, 3.2);
-    var eSend = A.eSend = gain(0), delay = A.delay = ctx.createDelay(1), eLp = filter('lowpass', 3500), fb = A.fb = gain(0.35);
-    delay.delayTime.value = 0.32;
-    var fl = ctx.createDelay(0.05), flWet = A.flWet = gain(0), flFb = A.flFb = gain(0.3);
-    fl.delayTime.value = 0.004;
-
-    // Boucle (LOOP) : tout passe en permanence dans une ligne à retard ; à
-    // l'enclenchement on ferme son entrée et on la reboucle sur elle-même :
-    // la dernière tranche de son tourne en rond.
-    var pre = gain(1), lDry = A.lDry = gain(1), lGate = A.lGate = gain(1), lDel = A.lDel = ctx.createDelay(1);
-    var lFb = A.lFb = gain(0), lWet = A.lWet = gain(0);
-    lDel.delayTime.value = 0.1;
-    pre.connect(lDry); lDry.connect(kill);
-    pre.connect(lGate); lGate.connect(lDel); lDel.connect(lWet); lWet.connect(kill); lDel.connect(lFb); lFb.connect(lDel);
-
-    fxIn.connect(cutG); cutG.connect(hp); hp.connect(lp);
-    lp.connect(clean); clean.connect(mix);
-    // Reverb, mégaphone et disto coûtent cher : ils ne sont branchés que
-    // lorsqu'ils servent (voir link), sinon ils tourneraient pour rien.
-    A.links = { rev: [revSend, conv, 6000], mega: [lp, mHp, 300], disto: [lp, dSh, 300] };
-    mHp.connect(mLp); mLp.connect(mSh); mSh.connect(mega); mega.connect(mix);
-    dSh.connect(disto); disto.connect(mix);
-    mix.connect(dry); dry.connect(trem);
-    mix.connect(fl); fl.connect(flWet); flWet.connect(trem); fl.connect(flFb); flFb.connect(fl);
-    trem.connect(pre);
-    mix.connect(revSend); conv.connect(pre);
-    mix.connect(eSend); eSend.connect(delay); delay.connect(eLp); eLp.connect(fb); fb.connect(delay); eLp.connect(pre);
     kill.connect(comp); comp.connect(ctx.destination);
+    var ir = impulse(ctx, 3.2);
 
-    // Oscillateurs lents : balayage du flanger, hachoir.
-    A.tremDepth = gain(0);
-    try {
-      var lfo = A.lfo = ctx.createOscillator(), lfoG = gain(0.0025);
-      lfo.frequency.value = 0.3; lfo.connect(lfoG); lfoG.connect(fl.delayTime); lfo.start(0);
-      var chop = A.chop = ctx.createOscillator();
-      chop.type = 'square'; chop.frequency.value = 7;
-      // le carré est arrondi (2 ms de fondu) : plus de clic à chaque hachure
-      var chopLp = filter('lowpass', 180, 0.5);
-      A.chopLp = chopLp;
-      chop.connect(chopLp); chopLp.connect(A.tremDepth); A.tremDepth.connect(trem.gain); chop.start(0);
-    } catch (e) {}
+    /*
+     * Une chaîne d'effets complète. Il y en a deux, identiques : une pour la
+     * soundboard (cases, micro, clips MIDI), une pour la musique du lecteur.
+     * Chaque effet va dans l'une, l'autre ou les deux, selon sa cible.
+     *   inp -> cut -> coupe-bas -> coupe-haut -> [net | mégaphone | disto] -> mix
+     *   mix -> direct -> hachoir -> pre      mix -> flanger -> hachoir
+     *   mix -> reverb -> pre                 mix -> écho -> pre
+     *   pre -> [direct | boucle] -> out -> (coupure générale) -> limiteur -> haut-parleur
+     */
+    function chain() {
+      var c = { inp: gain(1), cutG: gain(1), hp: filter('highpass', 20), lp: filter('lowpass', 20000), clean: gain(1), dry: gain(1),
+        mega: gain(0), disto: gain(0), trem: gain(1), tremDepth: gain(0), out: gain(1), pitch: 1, braked: false, gateOn: false, fxEcho: 0, fxFb: 0.35 };
+      var mix = gain(1), mHp = filter('highpass', 600), mLp = filter('lowpass', 2800), mSh = ctx.createWaveShaper(), dSh = ctx.createWaveShaper();
+      mSh.curve = driveCurve(6, 0.8); dSh.curve = driveCurve(25, 0.45);
+      c.revSend = gain(0); var conv = ctx.createConvolver(); conv.buffer = ir;
+      c.eSend = gain(0); c.delay = ctx.createDelay(1); var eLp = filter('lowpass', 3500); c.fb = gain(0.35);
+      c.delay.delayTime.value = 0.32;
+      var fl = ctx.createDelay(0.05); c.flWet = gain(0); c.flFb = gain(0.3);
+      fl.delayTime.value = 0.004;
+      // Boucle (LOOP) : tout passe en permanence dans une ligne à retard ; à
+      // l'enclenchement on ferme son entrée et on la reboucle sur elle-même.
+      var pre = gain(1);
+      c.lDry = gain(1); c.lGate = gain(1); c.lDel = ctx.createDelay(1); c.lFb = gain(0); c.lWet = gain(0);
+      c.lDel.delayTime.value = 0.1;
+      pre.connect(c.lDry); c.lDry.connect(c.out);
+      pre.connect(c.lGate); c.lGate.connect(c.lDel); c.lDel.connect(c.lWet); c.lWet.connect(c.out); c.lDel.connect(c.lFb); c.lFb.connect(c.lDel);
+      c.inp.connect(c.cutG); c.cutG.connect(c.hp); c.hp.connect(c.lp);
+      c.lp.connect(c.clean); c.clean.connect(mix);
+      // Reverb, mégaphone et disto coûtent cher : ils ne sont branchés que
+      // lorsqu'ils servent (voir link), sinon ils tourneraient pour rien.
+      c.links = { rev: [c.revSend, conv, 6000], mega: [c.lp, mHp, 300], disto: [c.lp, dSh, 300] };
+      mHp.connect(mLp); mLp.connect(mSh); mSh.connect(c.mega); c.mega.connect(mix);
+      dSh.connect(c.disto); c.disto.connect(mix);
+      mix.connect(c.dry); c.dry.connect(c.trem);
+      mix.connect(fl); fl.connect(c.flWet); c.flWet.connect(c.trem); fl.connect(c.flFb); c.flFb.connect(fl);
+      c.trem.connect(pre);
+      mix.connect(c.revSend); conv.connect(pre);
+      mix.connect(c.eSend); c.eSend.connect(c.delay); c.delay.connect(eLp); eLp.connect(c.fb); c.fb.connect(c.delay); eLp.connect(pre);
+      c.out.connect(kill);
+      // Oscillateurs lents : balayage du flanger, hachoir.
+      try {
+        var lfoG = gain(0.0025);
+        c.lfo = ctx.createOscillator();
+        c.lfo.frequency.value = 0.3; c.lfo.connect(lfoG); lfoG.connect(fl.delayTime); c.lfo.start(0);
+        c.chop = ctx.createOscillator();
+        c.chop.type = 'square'; c.chop.frequency.value = 7;
+        // le carré est arrondi (2 ms de fondu) : plus de clic à chaque hachure
+        c.chopLp = filter('lowpass', 180, 0.5);
+        c.chop.connect(c.chopLp); c.chopLp.connect(c.tremDepth); c.tremDepth.connect(c.trem.gain); c.chop.start(0);
+      } catch (e) {}
+      return c;
+    }
+    A.chP = chain();
+    A.chM = chain();
+    // bus : entrée des sons de la soundboard ; la musique du lecteur entre directement dans sa chaîne
+    A.bus = gain(1);
+    A.bus.connect(A.chP.inp);
+    // noms d'avant (chaîne de la soundboard), pour ce qui y fait encore référence
+    ['hp', 'lp', 'clean', 'dry', 'mega', 'disto', 'trem', 'tremDepth', 'revSend', 'eSend', 'delay', 'fb', 'flWet', 'flFb',
+      'lfo', 'chop', 'chopLp', 'lDry', 'lGate', 'lDel', 'lFb', 'lWet', 'cutG', 'links'].forEach(function (k) { A[k] = A.chP[k]; });
+    A.fxIn = A.chP.inp;
     A.route();
   };
 
-  // Cible des effets : 'all' (tout), 'pads' (soundboard seule) ou 'music'
-  // (lecteur de musique seul). Ce qui n'est pas visé contourne la chaîne.
+  // Cible du curseur d'effet et des cases FX réglées sur « comme le menu » :
+  // 'all' (tout), 'pads' (soundboard seule) ou 'music' (lecteur seul).
   A.target = 'all';
   A.pitchK = 1;
-  A.route = function () {
-    try { A.bus.disconnect(); } catch (e) {}
-    A.bus.connect(A.target === 'music' ? A.comp : A.fxIn);
-    if (B.deck) B.deck.route();
-  };
-  function padRate() { return A.target === 'music' ? 1 : A.pitchK; }
+  // tg vise-t-il cette chaîne (P : soundboard, M : musique) ?
+  function aims(tg, X) { if (!tg || tg === 'menu') tg = A.target; return tg === 'all' || (X === 'P' ? tg === 'pads' : tg === 'music'); }
+  A.route = function () { if (B.deck) B.deck.route(); };
+  function padRate() { return A.chP ? A.chP.pitch : 1; }
   // Hauteur (effet PITCH) : comme sur une platine, vitesse et hauteur vont ensemble.
   function retune() {
     var t = A.ctx.currentTime, id;
-    if (B.deck) B.deck.setRate(A.target === 'pads' ? 1 : A.pitchK);
-    if (A.braked) return;
+    A.pitchK = A.chP.pitch;
+    if (B.deck && !A.chM.braked) B.deck.setRate(A.chM.pitch);
+    if (A.chP.braked) return;
     for (id in A.voices) {
       try {
         var r = A.voices[id].src.playbackRate;
@@ -419,10 +428,9 @@
     }
   }
   A.setTarget = function (tg) {
-    if (A.braked) brake(false);
     A.target = B.TARGETS.indexOf(tg) >= 0 ? tg : 'all';
-    A.route();
-    retune();
+    rebrake();
+    applyFx(0.03);
   };
 
   A.resume = function () {
@@ -439,8 +447,8 @@
   A.fxPads = {}; // id de case -> valeurs de l'effet (B.padFxVal)
 
   // Branche un étage coûteux quand il sert, le débranche une fois sa queue éteinte.
-  function link(key, on) {
-    var L = A.links[key];
+  function link(c, key, on) {
+    var L = c.links[key];
     if (on) {
       if (L.t) { clearTimeout(L.t); L.t = null; }
       if (!L.on) { L[0].connect(L[1]); L.on = true; }
@@ -453,15 +461,16 @@
   }
 
   // Hachoir calé sur le tempo : on le relance pile sur un temps de l'horloge.
-  function rechop(hz, at) {
+  function rechop(c, hz, at) {
     try {
-      var old = A.chop, o = A.ctx.createOscillator();
+      var old = c.chop, o = A.ctx.createOscillator();
       o.type = 'square';
       o.frequency.value = hz;
-      o.connect(A.chopLp);
+      o.connect(c.chopLp);
       o.start(at);
       old.stop(at);
-      A.chop = o;
+      c.chop = o;
+      if (c === A.chP) A.chop = o;
     } catch (e) {}
   }
   // Les effets calés sur le tempo doivent suivre quand le tempo change (mode sync).
@@ -469,56 +478,64 @@
 
   // tc : temps de réponse général ; ftc : celui des filtres et du cut.
   function applyFx(tc, ftc) {
-    var t = A.ctx.currentTime, amt = {}, P = {}, id;
     if (ftc === undefined) ftc = tc;
-    var ty = A.fx.type, sv = B.fxVal(ty); // réglages de l'effet du curseur
-    amt[ty] = A.fx.amt * (sv.max === undefined ? 1 : sv.max);
+    var before = [A.chP.pitch, A.chM.pitch];
+    chainFx(A.chP, 'P', tc, ftc);
+    chainFx(A.chM, 'M', tc, ftc);
+    if (before[0] !== A.chP.pitch || before[1] !== A.chM.pitch) retune();
+  }
+  // Calcule et applique les effets d'une chaîne : ceux du curseur et des cases FX qui la visent.
+  function chainFx(c, X, tc, ftc) {
+    var t = A.ctx.currentTime, amt = {}, P = {}, id;
+    var ty = A.fx.type, sv = B.fxVal(ty), cur = aims(A.target, X) ? A.fx.amt : 0; // réglages de l'effet du curseur
+    amt[ty] = cur * (sv.max === undefined ? 1 : sv.max);
     for (id in A.fxPads) {
       var f = A.fxPads[id];
+      if (!aims(f.tgt, X)) continue;
       amt[f.type] = Math.max(amt[f.type] || 0, f.amt);
       P[f.type] = f;
     }
     function on(k) { return amt[k] || 0; }
-    function set(p, v, c) { p.setTargetAtTime(v, t, c || tc); }
+    function set(p, v, cc) { p.setTargetAtTime(v, t, cc || tc); }
     var rev = on('reverb'), ech = on('echo'), hc = on('highcut'), lc = on('lowcut');
     var meg = on('mega'), dis = on('disto'), fla = on('flanger'), gat = on('gate'), cut = on('cut') ? 1 : 0;
     var hz = P.gate ? P.gate.hz : ty === 'gate' ? sv.hz : 7, lop = on('loop') ? 1 : 0;
-    var pk = P.pitch ? Math.pow(2, P.pitch.st / 12) : ty === 'pitchup' ? Math.pow(2, sv.st * A.fx.amt / 12) :
-      ty === 'pitchdn' ? Math.pow(2, -sv.st * A.fx.amt / 12) : 1;
-    if (pk !== A.pitchK) { A.pitchK = pk; retune(); }
+    c.pitch = P.pitch ? Math.pow(2, P.pitch.st / 12) : ty === 'pitchup' ? Math.pow(2, sv.st * cur / 12) :
+      ty === 'pitchdn' ? Math.pow(2, -sv.st * cur / 12) : 1;
     // effets calés sur le tempo (réglage du menu) : écho, hachoir et loop tombent sur des divisions du temps
     var syn = B.cfg && B.cfg.fxSync !== false && B.midi, et = P.echo ? P.echo.time : ty === 'echo' ? sv.time : 0.32, ll = P.loop ? P.loop.len : 0;
     if (syn) { et = B.midi.div(et, 0.98); hz = B.midi.rateQ(hz); if (ll) ll = B.midi.div(ll, 0.98); }
-    if (gat > 0 && !A.gateOn && syn && B.midi.nextBeat()) rechop(hz, B.midi.nextBeat());
-    A.gateOn = gat > 0;
+    if (gat > 0 && !c.gateOn && syn && B.midi.nextBeat()) rechop(c, hz, B.midi.nextBeat());
+    c.gateOn = gat > 0;
 
-    link('rev', rev > 0.001); link('mega', meg > 0.001); link('disto', dis > 0.001);
-    A.fxEcho = ech;
-    A.fxFb = P.echo ? P.echo.fb : 0.35 + ((ty === 'echo' ? sv.fb : 0.85) - 0.35) * ech;
+    link(c, 'rev', rev > 0.001); link(c, 'mega', meg > 0.001); link(c, 'disto', dis > 0.001);
+    c.fxEcho = ech;
+    c.fxFb = P.echo ? P.echo.fb : 0.35 + ((ty === 'echo' ? sv.fb : 0.85) - 0.35) * ech;
+    if (c === A.chP) { A.fxEcho = c.fxEcho; A.fxFb = c.fxFb; }
     // reverb : le son direct s'efface et s'assourdit, il ne reste presque que la queue
-    set(A.revSend.gain, 3.2 * Math.pow(rev, 0.8));
-    set(A.dry.gain, Math.max(0, 1 - 0.88 * rev - 0.5 * ech));
-    set(A.eSend.gain, 1.2 * ech);
-    set(A.delay.delayTime, Math.min(0.98, et), 0.05);
-    if (!A.killed) set(A.fb.gain, A.fxFb);
-    set(A.lp.frequency, 20000 * Math.pow(0.006, hc) * Math.pow(0.18, rev), ftc);
-    set(A.lp.Q, 0.7 + (ty === 'highcut' && !P.highcut ? sv.q - 0.7 : 7) * hc, ftc);
+    set(c.revSend.gain, 3.2 * Math.pow(rev, 0.8));
+    set(c.dry.gain, Math.max(0, 1 - 0.88 * rev - 0.5 * ech));
+    set(c.eSend.gain, 1.2 * ech);
+    set(c.delay.delayTime, Math.min(0.98, et), 0.05);
+    if (!c.killed) set(c.fb.gain, c.fxFb);
+    set(c.lp.frequency, 20000 * Math.pow(0.006, hc) * Math.pow(0.18, rev), ftc);
+    set(c.lp.Q, 0.7 + (ty === 'highcut' && !P.highcut ? sv.q - 0.7 : 7) * hc, ftc);
     // reverb : passé la moitié, un coupe-bas s'installe peu à peu (jusqu'à 500 Hz à fond)
-    set(A.hp.frequency, Math.max(20 * Math.pow(400, lc), rev > 0.5 ? 20 * Math.pow(25, (rev - 0.5) * 2) : 20), ftc);
-    set(A.hp.Q, 0.7 + (ty === 'lowcut' && !P.lowcut ? sv.q - 0.7 : 7) * lc, ftc);
-    set(A.mega.gain, 1.3 * meg);
-    set(A.disto.gain, dis);
-    set(A.clean.gain, Math.max(0, 1 - meg - dis));
-    set(A.flWet.gain, fla);
-    set(A.flFb.gain, 0.3 + 0.6 * fla * (ty === 'flanger' ? sv.fb : 1));
-    if (A.lfo) set(A.lfo.frequency, ty === 'flanger' ? sv.rate : 0.3, 0.05);
-    if (A.chop) set(A.chop.frequency, hz, 0.01);
-    set(A.trem.gain, 1 - gat / 2);
-    set(A.tremDepth.gain, gat / 2);
-    if (ll) set(A.lDel.delayTime, ll, 0.004);
-    set(A.lGate.gain, 1 - lop, 0.003); set(A.lFb.gain, lop, 0.003);
-    set(A.lDry.gain, 1 - lop, 0.003); set(A.lWet.gain, lop, 0.003);
-    A.cutG.gain.setTargetAtTime(cut ? 0 : 1, t, P.cut ? P.cut.sweep : Math.min(ftc, 0.004));
+    set(c.hp.frequency, Math.max(20 * Math.pow(400, lc), rev > 0.5 ? 20 * Math.pow(25, (rev - 0.5) * 2) : 20), ftc);
+    set(c.hp.Q, 0.7 + (ty === 'lowcut' && !P.lowcut ? sv.q - 0.7 : 7) * lc, ftc);
+    set(c.mega.gain, 1.3 * meg);
+    set(c.disto.gain, dis);
+    set(c.clean.gain, Math.max(0, 1 - meg - dis));
+    set(c.flWet.gain, fla);
+    set(c.flFb.gain, 0.3 + 0.6 * fla * (ty === 'flanger' ? sv.fb : 1));
+    if (c.lfo) set(c.lfo.frequency, ty === 'flanger' ? sv.rate : 0.3, 0.05);
+    if (c.chop) set(c.chop.frequency, hz, 0.01);
+    set(c.trem.gain, 1 - gat / 2);
+    set(c.tremDepth.gain, gat / 2);
+    if (ll) set(c.lDel.delayTime, ll, 0.004);
+    set(c.lGate.gain, 1 - lop, 0.003); set(c.lFb.gain, lop, 0.003);
+    set(c.lDry.gain, 1 - lop, 0.003); set(c.lWet.gain, lop, 0.003);
+    c.cutG.gain.setTargetAtTime(cut ? 0 : 1, t, P.cut ? P.cut.sweep : Math.min(ftc, 0.004));
   }
 
   A.setFx = function (type, a) {
@@ -526,13 +543,11 @@
     applyFx(0.03);
   };
 
-  // Vinyl stop : toutes les voix ralentissent jusqu'à l'arrêt, puis repartent.
-  function brake(on, time) {
+  // Vinyl stop : ce que vise la case (soundboard et/ou musique) ralentit jusqu'à l'arrêt, puis repart.
+  function brakeP(on, time) {
     var t = A.ctx.currentTime, id;
-    A.braked = on;
-    if (B.deck && A.target !== 'pads') B.deck.brake(on, time);
-    if (B.midi && A.target !== 'music') B.midi.brake(on, time);
-    if (A.target === 'music') return;
+    A.chP.braked = on;
+    if (B.midi) B.midi.brake(on, time);
     for (id in A.voices) {
       var r = A.voices[id].src.playbackRate;
       try {
@@ -542,36 +557,66 @@
       } catch (e) {}
     }
   }
+  function brakeM(on, time) {
+    A.chM.braked = on;
+    if (B.deck) B.deck.brake(on, time);
+  }
+  // Remet chaque chaîne dans l'état voulu par les cases vinyl stop enclenchées.
+  function rebrake() {
+    var k, f, bp = null, bm = null;
+    for (k in A.fxPads) {
+      f = A.fxPads[k];
+      if (f.type !== 'brake') continue;
+      if (aims(f.tgt, 'P')) bp = f;
+      if (aims(f.tgt, 'M')) bm = f;
+    }
+    if (!!bp !== A.chP.braked) brakeP(!!bp, bp && bp.time);
+    if (!!bm !== A.chM.braked) brakeM(!!bm, bm && bm.time);
+    A.braked = A.chP.braked || A.chM.braked;
+  }
 
-  // Case FX : enclenche ou relâche un effet DJ sur tout ce qui joue.
+  // Case FX : enclenche ou relâche un effet DJ sur ce qu'elle vise.
   A.padFx = function (pad, on) {
     var id = pad.id, had = A.fxPads[id];
     if (!on && !had) return;
-    if (on) { unkill(); A.fxPads[id] = B.padFxVal(pad); } else delete A.fxPads[id];
-    var k, braking = null;
-    for (k in A.fxPads) if (A.fxPads[k].type === 'brake') braking = A.fxPads[k];
-    if (!!braking !== !!A.braked) brake(!!braking, braking && braking.time);
+    if (on) { unkill(); A.fxPads[id] = fxOf(pad); } else delete A.fxPads[id];
+    rebrake();
     // les filtres balaient, le reste claque
     var f = on ? A.fxPads[id] : had;
     applyFx(0.03, f.sweep || 0.03);
     if (A.onChange) A.onChange(id);
   };
+  // Valeurs d'une case FX, avec sa cible (« menu » : comme le curseur).
+  function fxOf(pad) { var v = B.padFxVal(pad); v.tgt = pad.target || 'menu'; return v; }
 
   // Les réglages d'une case FX enclenchée ont changé (glissé en direct).
   A.padFxUpdate = function (pad) {
     if (!A.fxPads[pad.id]) return;
-    A.fxPads[pad.id] = B.padFxVal(pad);
+    A.fxPads[pad.id] = fxOf(pad);
+    rebrake();
     applyFx(0.03, 0.04);
   };
 
+  // Coupe net la sortie d'une chaîne (STOP), queues de reverb et d'écho comprises.
+  function killChain(c, t) {
+    c.killed = true;
+    c.out.gain.cancelScheduledValues(t);
+    c.out.gain.setTargetAtTime(0, t, 0.008);
+    c.fb.gain.cancelScheduledValues(t);
+    c.fb.gain.setValueAtTime(0, t);
+  }
   function unkill() {
     if (!A.killed) return;
     A.killed = false;
     if (A.killT) { clearTimeout(A.killT); A.killT = null; }
     var t = A.ctx.currentTime;
-    A.kill.gain.cancelScheduledValues(t);
-    A.kill.gain.setTargetAtTime(1, t, 0.004);
-    A.fb.gain.setTargetAtTime(A.fxFb || 0.35, t, 0.01);
+    [A.chP, A.chM].forEach(function (c) {
+      if (!c.killed) return;
+      c.killed = false;
+      c.out.gain.cancelScheduledValues(t);
+      c.out.gain.setTargetAtTime(1, t, 0.004);
+      c.fb.gain.setTargetAtTime(c.fxFb || 0.35, t, 0.01);
+    });
   }
 
   A.unkill = unkill;
@@ -651,24 +696,17 @@
     ids.forEach(function (id) { A.stop(id, false, true); });
     var fxIds = Object.keys(A.fxPads);
     A.fxPads = {};
-    if (A.braked) brake(false);
+    rebrake();
     if (fxIds.length) { applyFx(0.03); fxIds.forEach(function (id) { if (A.onChange) A.onChange(id); }); }
     if (B.mic && B.mic.on) B.mic.stop(true);
     if (B.midi) B.midi.stopAll();
-    // réglage du menu : STOP peut laisser tourner la musique du lecteur
-    if (B.deck && B.deck.playing() && B.cfg && B.cfg.stopMusic === false) {
-      // la musique passe par la même sortie : on ne la coupe pas, on éteint juste la queue d'écho
-      A.fb.gain.cancelScheduledValues(t);
-      A.fb.gain.setValueAtTime(0, t);
-      A.fb.gain.setTargetAtTime(A.fxFb || 0.35, t + 0.4, 0.05);
-      return;
-    }
-    if (B.deck) B.deck.pause();
     A.killed = true;
-    A.kill.gain.cancelScheduledValues(t);
-    A.kill.gain.setTargetAtTime(0, t, 0.008);
-    A.fb.gain.cancelScheduledValues(t);
-    A.fb.gain.setValueAtTime(0, t);
+    // la soundboard est toujours coupée ; la musique aussi, sauf réglage contraire du menu
+    killChain(A.chP, t);
+    if (!(B.deck && B.deck.playing() && B.cfg && B.cfg.stopMusic === false)) {
+      if (B.deck) B.deck.pause();
+      killChain(A.chM, t);
+    }
     if (A.killT) clearTimeout(A.killT);
     A.killT = setTimeout(function () { A.killT = null; unkill(); }, 3400);
   };
@@ -858,6 +896,8 @@
         base.fx = B.PAD_FX.indexOf(p.fx) >= 0 ? p.fx : 'brake';
         base.mode = p.mode === 'toggle' ? 'toggle' : 'gate';
         base.live = !!p.live;
+        // cible propre à la case : « menu » (comme le curseur), soundboard, musique ou les deux
+        base.target = ['pads', 'music', 'all'].indexOf(p.target) >= 0 ? p.target : 'menu';
         if (typeof p.p1 === 'number') base.p1 = num(p.p1, 0, 0, 1);
         if (typeof p.p2 === 'number') base.p2 = num(p.p2, 0, 0, 1);
       } else {
@@ -925,7 +965,7 @@
     cfg.stopMusic = raw.stopMusic !== false;
     // clips MIDI : tempo, tonalité, gamme et swing communs
     var md = raw.midi && typeof raw.midi === 'object' ? raw.midi : {};
-    cfg.midi = { bpm: Math.round(num(md.bpm, 120, 60, 200)), root: Math.floor(num(md.root, 9, 0, 11)),
+    cfg.midi = { bpm: Math.round(num(md.bpm, 120, 40, 240)), root: Math.floor(num(md.root, 9, 0, 11)),
       scale: B.midi.SCALES[md.scale] ? md.scale : 'minor', swing: num(md.swing, 0, 0, 0.6) };
     cfg.quickAdd = raw.quickAdd === true;
     // commentaires des morceaux (par nom de fichier)

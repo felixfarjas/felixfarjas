@@ -329,14 +329,50 @@
     k.push(finish(a, 1.2, 0.7));
     // 7 crash
     k.push(cymbal(1.6, K.crash.dec, K.crash.hp, 0.9, 0.45));
+    k.K = K;
     kits[id] = k;
     return k;
   }
-  // m : macros du kit [kick, hauteur, durée, saturation]
+  // Rapport de vitesse qui amène la fréquence f sur la note la plus proche parmi les
+  // classes de hauteur pcs (0..11, absolues). Au plus une demi-octave de correction.
+  function tuneTo(f, pcs) {
+    var n = 69 + 12 * Math.log(f / 440) / Math.LN2, best = 0, bd = 99, k, d;
+    for (k = 0; k < pcs.length; k++) {
+      d = ((((pcs[k] - n) % 12) + 18) % 12) - 6;
+      if (Math.abs(d) < Math.abs(bd)) bd = d;
+    }
+    return bd === 99 ? 1 : Math.pow(2, bd / 12);
+  }
+  // Accord des fûts sur la gamme en vigueur (gamme automatique comprise) :
+  // le kick sur la tonique (ou la quinte si elle est plus près), le tom sur la note de la gamme la plus proche.
+  function drumTune(K, lane) {
+    if (!K || (lane !== 0 && lane !== 5)) return 1;
+    var r = root(), sc = M.scale(), pcs = [];
+    if (lane === 0) { pcs.push(r); if (sc.indexOf(7) >= 0) pcs.push(r + 7); }
+    else sc.forEach(function (st) { pcs.push(r + st); });
+    return tuneTo(lane === 0 ? K.kick.f : K.tom.f, pcs);
+  }
+  // Timbre du kit : plus sombre en dessous du milieu (passe-bas), plus brillant au-dessus (aigus relevés).
+  function drumTone(c, v, t) {
+    var x = ctx();
+    if (!c.dt) {
+      c.dt = { lp: x.createBiquadFilter(), hs: x.createBiquadFilter(), v: -1 };
+      c.dt.lp.type = 'lowpass'; c.dt.lp.Q.value = 0.5; c.dt.lp.frequency.value = 20000;
+      c.dt.hs.type = 'highshelf'; c.dt.hs.frequency.value = 3500; c.dt.hs.gain.value = 0;
+      c.dt.lp.connect(c.dt.hs); c.dt.hs.connect(c.inp);
+    }
+    if (Math.abs(c.dt.v - v) > 0.01) {
+      c.dt.v = v;
+      c.dt.lp.frequency.setTargetAtTime(v < 0.5 ? 20000 * Math.pow(0.03, (0.5 - v) * 2) : 20000, t, 0.01);
+      c.dt.hs.gain.setTargetAtTime(v > 0.5 ? (v - 0.5) * 2 * 12 : 0, t, 0.01);
+    }
+    return c.dt.lp;
+  }
+  // m : macros du kit [kick, timbre, durée, saturation]
   function drumHit(c, kit, lane, t, vel, m, pk) {
     var b = kit[lane];
     if (!b) return;
-    var x = ctx(), s = x.createBufferSource(), g = x.createGain(), rate = Math.pow(2, (m[1] - 0.5) * (lane === 0 ? 0.6 : 1.2)) * (pk || 1);
+    var x = ctx(), s = x.createBufferSource(), g = x.createGain(), rate = drumTune(kit.K, lane) * (pk || 1);
     s.buffer = b;
     s.playbackRate.value = rate;
     // chaque élément à sa place dans le mix : le kick devant, les cymbales derrière
@@ -348,7 +384,7 @@
     // le charley fermé étouffe le charley ouvert, comme sur une vraie batterie
     if (lane === 3 && c.open) { try { c.open.gain.cancelScheduledValues(t); c.open.gain.setTargetAtTime(0, t, 0.008); } catch (e) {} }
     if (lane === 4) c.open = g;
-    s.connect(g); g.connect(c.inp);
+    s.connect(g); g.connect(drumTone(c, m[1], t));
     s.onended = function () { try { g.disconnect(); } catch (e) {} };
     s.start(t);
   }
@@ -378,7 +414,7 @@
   }
   function tickDur() { return 60 / M.bpm() / 4 / Math.max(0.05, bk); }
   // Hauteur à appliquer aux notes : effet PITCH et vinyl stop.
-  function pitch() { return (A.target !== 'music' ? A.pitchK || 1 : 1) * bk; }
+  function pitch() { return (A.chP ? A.chP.pitch : 1) * bk; }
   function change(id) { if (A.onChange) A.onChange(id); }
   // à appeler après toute modification des notes d'un clip
   M.touch = function (pad) { delete maps[pad.id]; };
@@ -505,31 +541,54 @@
 
   // ====================== BPM control ======================
   M.musicLocked = function () { return !!music(); };
-  // − / + : en mode sync sur une musique, corrige le tempo du morceau au dixième ;
-  // sinon change le tempo réglé, d'un BPM.
-  M.nudge = function (d) {
+  // Décalage manuel de la grille depuis le dernier SYNC (ms), pour l'affichage.
+  M.shiftMs = 0;
+  function changeAll() { for (var id in active) change(id); }
+  // − / + : décalent un peu la grille des clips, sans toucher au tempo :
+  // + la retarde, − l'avance (en secondes). Sur une musique, le décalage est gardé pour le morceau.
+  M.shift = function (dt) {
+    var m = music();
+    if (m) B.deck.setOff(m.off + dt);
+    else if (timer) { nextTime += dt; lastTime += dt; }
+    M.shiftMs = Math.round(M.shiftMs + dt * 1000);
+    if (timer) run();
+    changeAll();
+  };
+  // ×2 / ÷2 : double ou divise le tempo (celui du morceau en mode sync, sinon celui réglé).
+  M.scaleBpm = function (k) {
     var m = music(), v;
     if (m) {
-      v = Math.round((m.bpm + d * 0.1) * 10) / 10;
+      v = Math.round(m.bpm * k * 100) / 100;
+      if (v < 40 || v > 240) return false;
       if (B.deck.setBpm(v)) bpmNow = v * m.rate;
+      // le premier temps reste à sa place ; la grille ne déborde pas des 16 temps
+      B.deck.setOff(m.off);
     } else {
-      cf().bpm = Math.max(60, Math.min(200, Math.round(cf().bpm + d)));
-      bpmNow = cf().bpm;
+      v = Math.round(cf().bpm * k);
+      if (v < 40 || v > 240) return false;
+      cf().bpm = v;
+      bpmNow = v;
       B.save();
     }
+    if (timer) run();
+    changeAll();
     if (A.refx) A.refx();
+    return true;
   };
-  // SYNC : les clips repartent du début à cet instant. Sur une musique, ce calage
-  // devient le premier temps du morceau, et il est gardé.
+  // SYNC : le premier temps tombe à cet instant, sans changer le tempo. Les clips
+  // repartent du début. Sur une musique, ce calage devient le premier temps du morceau, et il est gardé.
   M.resync = function () {
     var m = music(), now = ctx().currentTime;
+    M.shiftMs = 0;
     // le premier temps tombe pile à l'instant du toucher, et on le joue aussitôt
     if (m) { B.deck.setOff(m.pos); snap = true; }
-    else if (timer) { nextTick = 0; nextTime = now; }
+    else if (timer) { nextTick = 0; nextTime = now; lastTick = 0; lastTime = now; }
     if (timer) run();
+    // la barre de progression des clips repart du début elle aussi
+    changeAll();
   };
   // Appui long sur SYNC : on oublie le calage manuel, retour à l'analyse automatique.
-  M.unsync = function () { return !!music() && B.deck.resetManual(); };
+  M.unsync = function () { M.shiftMs = 0; return !!music() && B.deck.resetManual(); };
   // Où en est le temps (en temps, à virgule), pour le voyant : horloge des clips, ou musique en mode sync.
   M.phase = function () {
     if (timer) return (lastTick + (ctx().currentTime - lastTime) / tickDur()) / 4;

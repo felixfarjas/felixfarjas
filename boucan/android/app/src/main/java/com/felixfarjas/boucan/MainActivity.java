@@ -97,6 +97,9 @@ public class MainActivity extends Activity {
     private OutputStream musicInOut;
     private boolean musicInFailed;
 
+    /** L'appli en cours (pour les widgets), ou null. */
+    static volatile MainActivity live;
+
     private FrameLayout root;
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
@@ -174,6 +177,22 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
         web.loadUrl(START_URL);
+        live = this;
+        Widgets.refreshAll(this);
+    }
+
+    /** Toucher d'un widget : une commande du lecteur, ou l'id d'une case à jouer. */
+    void fromWidget(final String cmd, final String pad) {
+        if (pad == null) {
+            deckCmd(cmd, 0);
+            return;
+        }
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (web != null) web.evaluateJavascript("window.Boucan&&Boucan.widgetTap&&Boucan.widgetTap(" + JSONObject.quote(pad) + ")", null);
+            }
+        });
     }
 
     @Override
@@ -206,8 +225,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (live == this) live = null;
         focus(0);
         clearNowPlaying();
+        Widgets.refreshAll(this);
         closeExport();
         if (web != null) {
             root.removeView(web);
@@ -680,6 +701,7 @@ public class MainActivity extends Activity {
                     .addAction(android.R.drawable.ic_media_next, "next", npIntent("next", 3))
                     .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()).setShowActionsInCompactView(0, 1, 2));
             Notification n = b.build();
+            Widgets.setMusic(this, true, title, artist, playing, npArt);
             PlayService.current = n;
             if (playing || npService) {
                 try {
@@ -699,6 +721,7 @@ public class MainActivity extends Activity {
     }
 
     private void clearNowPlaying() {
+        Widgets.setMusic(this, false, "", "", false, null);
         try {
             PlayService.current = null;
             stopService(new Intent(this, PlayService.class));
@@ -751,6 +774,18 @@ public class MainActivity extends Activity {
 
     /** Appelé depuis la page : le fichier arrive par morceaux en base64. */
     private final class Bridge {
+        /** Pages et cases proposées par le widget grille. */
+        @JavascriptInterface
+        public void widgetData(String json) {
+            Widgets.setPads(getApplicationContext(), json);
+        }
+
+        /** Commande d'un widget touché pendant que l'appli était fermée ("" s'il n'y en a pas). */
+        @JavascriptInterface
+        public String widgetPending() {
+            return Widgets.takePending(getApplicationContext());
+        }
+
         @JavascriptInterface
         @SuppressWarnings("deprecation")
         public void vibrate(int ms) {

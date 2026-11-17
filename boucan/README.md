@@ -9,15 +9,22 @@ Soundboard Android ultra simple, pensé pour être joué d'une main, à vélo, e
   séquenceur de batterie ou grille mélodique verrouillée sur la gamme, générateur de motifs, tempo et gamme communs,
   un clip à la fois par page avec enchaînement en fin de boucle. Widget *clavier* de huit touches dans la gamme.
 - **Mode sync et BPM control** : le tempo et la gamme des morceaux du lecteur sont analysés une fois et gardés avec leurs étiquettes ;
-  clips et effets calés suivent la musique. La case *BPM control* ajuste le tempo et recale les clips à la main (SYNC),
-  un appui long sur SYNC revenant à l'analyse. Option *gamme automatique* : les clips et le clavier passent dans la tonalité du morceau.
+  clips et effets calés suivent la musique. La case *BPM control* : SYNC pose le premier temps à l'instant du toucher
+  sans changer le tempo (appui long : retour à l'analyse), − / + décalent finement la grille des clips (10 ms par appui),
+  ÷2 / ×2 divisent ou doublent le tempo. Option *gamme automatique* : les clips, le clavier, le kick et le tom passent
+  dans la tonalité du morceau (le kick est toujours accordé sur la tonique ou la quinte de la gamme en vigueur).
 - **Samples** : *one shot*, *on / off* ou *piano*, boucle, recadrage avec zoom, fondus, volume, débruiteur et « enhance » pour les prises micro.
 - **Effets** : reverb, écho, coupe-haut, coupe-bas, mégaphone, disto, flanger, hachoir, pitch, loop, vinyl stop, cut.
   Un curseur en haut à gauche (le bouton `FX` fait défiler les effets ; appui long : cible, liste et réglages de chaque effet)
-  et des cases FX réglables, y compris en glissant le doigt.
+  et des cases FX réglables, y compris en glissant le doigt. Chaque case FX peut viser la soundboard, la musique ou les deux,
+  quel que soit le réglage du menu (deux chaînes d'effets séparées).
 - **Lecteur de musique** (widget 2 × 3 cases, `web/js/deck.js`) : lit les fichiers du téléphone dossier par dossier, avec forme d'onde,
   recherche, volume propre, vinyl stop, commandes dans les notifications, et pour chaque morceau une couleur, un commentaire
-  et un point de départ. Le morceau est joué depuis la mémoire pour que les positions soient exactes.
+  et un point de départ. Le morceau démarre aussitôt en flux (directement à son point de départ), puis passe en fondu
+  sur la version en mémoire dès qu'elle est décodée, pour que les positions soient exactes.
+- **Widgets Android** sur l'écran d'accueil : *lecteur* (morceau en cours, précédent / lecture / suivant) et *cases*
+  (samples, FX et clips MIDI d'une page en petit, 1 à 4 colonnes et rangées selon la taille du widget ; toucher le nom
+  de la page pour passer à la suivante). Appli fermée, un toucher la relance.
 - **Phone control** (widget d'une rangée) : télécommande de l'appli de musique en cours (Spotify…). Demande l'« accès aux notifications ».
 - **Cible des effets** : soundboard, musique du lecteur, ou les deux. La musique peut baisser ou se mettre en pause quand on parle au micro.
 - **STOP** coupe tout ; **ÉDIT** pour tout régler ; interface en français ou en anglais.
@@ -29,7 +36,7 @@ Soundboard Android ultra simple, pensé pour être joué d'une main, à vélo, e
 
 ## Installer
 
-Télécharger `dist/Boucan-2.10.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
+Télécharger `dist/Boucan-2.11.apk` sur le téléphone, l'ouvrir, puis autoriser l'installation
 depuis cette source quand Android le demande.
 
 ## Organisation
@@ -43,7 +50,7 @@ depuis cette source quand Android le demande.
 | `web/js/core.js` | Stockage (IndexedDB), moteur audio (Web Audio), format `.boucan`. |
 | `web/js/deck.js` | Lecteur de musique intégré. |
 | `web/js/ui.js` | Interface : cases, édition, recadrage, pages, menu. |
-| `android/` | Enveloppe Android : une `WebView` plein écran, fichiers, export, musiques du téléphone, notification du lecteur. |
+| `android/` | Enveloppe Android : une `WebView` plein écran, fichiers, export, musiques du téléphone, notification du lecteur, widgets. |
 
 ## Compiler
 

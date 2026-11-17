@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="w_music">Boucan · player</string>
+    <string name="w_music_desc">The current track, with play, previous and next.</string>
+    <string name="w_pads">Boucan · pads</string>
+    <string name="w_pads_desc">Your pads (samples, FX, MIDI clips), small. Tap the page name to go to the next one.</string>
+</resources>

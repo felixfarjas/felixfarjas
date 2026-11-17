@@ -31,7 +31,7 @@
     U.sheet(t('mdSet'), function (body) {
       var bpm = U.rangeS(function () { return (c.bpm - 60) / 140; }, function (v) { c.bpm = Math.round(60 + v * 140); B.save(); },
         function () { return c.bpm + ' BPM'; });
-      function nudge(d) { return btn(d > 0 ? '+' : '−', 'nudge', function () { c.bpm = Math.max(60, Math.min(200, c.bpm + d)); bpm.paint(); B.save(); }); }
+      function nudge(d) { return btn(d > 0 ? '+' : '−', 'nudge', function () { c.bpm = Math.max(40, Math.min(240, c.bpm + d)); bpm.paint(); B.save(); }); }
       var row = U.add(U.h('div', 'row'), nudge(-1), nudge(1));
       row.style.marginTop = '8px';
       U.sec(body, t('mdBpm'), bpm, row);

@@ -161,7 +161,8 @@
     p.name.className = 'name' + (longest > 11 || nm.length > 22 ? ' s3' : longest > 8 || nm.length > 14 ? ' s2' : '');
     p.name.textContent = nm;
     p.tag.textContent = midi ? pad.bars + ' ' + t(pad.bars > 1 ? 'mdBarsN' : 'mdBar1') + (mst === 'queued' ? ' · ' + t('mdWait') : '') :
-      mic ? t(pad.micMode === 'live' ? 'micLive' : 'micAfter') : t('mode.' + pad.mode) + (pad.loop ? ' · ' + t('loop') : '');
+      mic ? t(pad.micMode === 'live' ? 'micLive' : 'micAfter') : t('mode.' + pad.mode) + (pad.loop ? ' · ' + t('loop') : '') +
+      (fx && pad.target && pad.target !== 'menu' ? ' · ' + t('tgs.' + pad.target) : '');
     setProg(p, v);
   }
 
@@ -720,13 +721,16 @@
   // − / + pour le tempo, SYNC pour recaler les clips à la main.
   function bpmDom() {
     var d = { el: h('div', 'bpmc'), val: h('div', 'bcVal'), tag: h('div', 'bcTag'), dot: h('div', 'bcDot') };
-    add(d.el, d.tag, d.dot, d.val, add(h('div', 'bcRow'), cmdBtn('bcBtn', 'bminus', '\u2212'), cmdBtn('bcBtn bcSync', 'bsync', 'SYNC'), cmdBtn('bcBtn', 'bplus', '+')));
+    add(d.el, d.tag, d.dot,
+      add(h('div', 'bcMid'), cmdBtn('bcBtn bcK', 'bhalf', '\u00f72'), d.val, cmdBtn('bcBtn bcK', 'bdouble', '\u00d72')),
+      add(h('div', 'bcRow'), cmdBtn('bcBtn', 'bminus', '\u2212'), cmdBtn('bcBtn bcSync', 'bsync', 'SYNC'), cmdBtn('bcBtn', 'bplus', '+')));
     return d;
   }
   function bpmPaint(d) {
     var v = B.midi.bpm(), lock = B.midi.musicLocked();
     setText(d.val, Math.abs(v - Math.round(v)) < 0.05 ? String(Math.round(v)) : v.toFixed(1));
-    setText(d.tag, lock ? t(B.deck.manual() ? 'bcManual' : 'bcMusic') : 'BPM');
+    var sh = B.midi.shiftMs;
+    setText(d.tag, (lock ? t(B.deck.manual() ? 'bcManual' : 'bcMusic') : 'BPM') + (sh ? ' \u00b7 ' + (sh > 0 ? '+' : '\u2212') + Math.abs(sh) + ' ms' : ''));
   }
   // Voyant des temps et valeur affichée : rafraîchis 20 fois par seconde, seulement si la page a une case BPM control.
   function bpmTick() {
@@ -759,16 +763,17 @@
         toast(t(B.midi.unsync() ? 'bcReset' : 'bcNoManual'), 2500);
         bpmPaint(d);
       }, 700);
+    } else if (cmd === 'bhalf' || cmd === 'bdouble') {
+      if (!B.midi.scaleBpm(cmd === 'bdouble' ? 2 : 0.5)) toast(t('bcRange'), 2000);
     } else {
-      var dir = cmd === 'bplus' ? 1 : -1, n = 0;
-      B.midi.nudge(dir);
-      // tenu : ça défile, puis ça accélère
+      // − / + : la grille avance ou recule de 10 ms ; tenu, elle continue de glisser par 5 ms
+      var dir = cmd === 'bplus' ? 1 : -1;
+      B.midi.shift(dir * 0.01);
       hd.bc.t = setTimeout(function rep() {
-        n++;
-        B.midi.nudge(dir * (n > 10 ? 5 : 1));
+        B.midi.shift(dir * 0.005);
         bpmPaint(d);
-        hd.bc.t = setTimeout(rep, 90);
-      }, 420);
+        hd.bc.t = setTimeout(rep, 110);
+      }, 450);
     }
     bpmPaint(d);
   }
@@ -1951,6 +1956,13 @@
         sec(body, t('trigger'), choice([['gate', t('mode.gate')], ['toggle', t('mode.toggle')]], pad.mode, function (m) {
           A.padFx(pad, false); pad.mode = m; fh.textContent = t('hint.fx' + m); show();
         }), fh);
+        // cible propre à cette case, indépendante du réglage du menu
+        var tgRow = choice([['menu', t('tg.menu')], ['all', t('tg.all')], ['pads', t('tg.pads')], ['music', t('tg.music')]], pad.target || 'menu', function (g) {
+          A.padFx(pad, false); pad.target = g; B.save(); show();
+        });
+        var tgGrid = h('div', 'sw two');
+        Array.prototype.slice.call(tgRow.childNodes).forEach(function (b) { add(tgGrid, add(h('div'), b)); });
+        sec(body, t('pfxTarget'), tgGrid, h('div', 'note', t('pfxTargetNote')));
         sec(body, '', check(t('fxLive'), !!pad.live, function (v) { pad.live = v; B.save(); }), h('div', 'note', t('fxLiveNote')));
       } else {
         var hint = h('div', 'note', t('hint.' + pad.mode));
@@ -2335,6 +2347,67 @@
     return false;
   };
 
+  // ====================== Widgets Android ======================
+  // Le widget « grille » montre les samples, FX et clips MIDI de chaque page
+  // (un hub donne ses 4 boutons). On lui renvoie la liste quand elle change.
+  var wLast = '', wT = null;
+  function widgetPush() {
+    var N = window.BoucanNative;
+    if (!N || !N.widgetData || !B.cfg) return;
+    if (wT) clearTimeout(wT);
+    wT = setTimeout(function () {
+      wT = null;
+      var pages = [];
+      B.cfg.pages.forEach(function (pg) {
+        var list = [];
+        function put(p) {
+          var ty = p ? p.type || 'sample' : '';
+          if (ty !== 'sample' && ty !== 'fx' && ty !== 'midi') return;
+          list.push({ id: p.id, n: p.name || (ty === 'fx' ? t('pfx.' + p.fx) : ''), c: p.color, k: ty === 'fx' ? 'FX' : ty === 'midi' ? 'MIDI' : '' });
+        }
+        pg.pads.forEach(function (p) { if (p && p.type === 'hub') p.subs.forEach(put); else put(p); });
+        if (list.length) pages.push({ n: pg.name, c: pg.color, pads: list });
+      });
+      var s = JSON.stringify({ pages: pages });
+      if (s === wLast) return;
+      wLast = s;
+      try { N.widgetData(s); } catch (e) {}
+    }, 800);
+  }
+  // Une case touchée sur le widget : comme un toucher bref sur la case.
+  B.widgetTap = function (id) {
+    if (!B.cfg) return;
+    var pad = null, pg = -1;
+    B.cfg.pages.forEach(function (p, k) {
+      p.pads.forEach(function (c) {
+        if (!c || pad) return;
+        if (c.id === id) { pad = c; pg = k; }
+        else if (c.type === 'hub') c.subs.forEach(function (q) { if (q && q.id === id && !pad) { pad = q; pg = k; } });
+      });
+    });
+    if (!pad) return;
+    A.resume();
+    var ty = pad.type || 'sample';
+    // un FX se met et s'enlève à chaque toucher (on ne peut pas le tenir sur un widget)
+    if (ty === 'fx') A.padFx(pad, !A.fxPads[pad.id]);
+    else if (ty === 'midi') B.midi.toggle(pad, pg);
+    else if (A.buffers[pad.sample]) {
+      if (pad.mode !== 'oneshot' && A.voices[pad.id]) A.stop(pad.id); else A.play(pad);
+    }
+    // appli tout juste lancée par le widget : ce son n'est peut-être pas encore chargé
+    else if (pad.sample) A.load(pad.sample).then(function (b) { if (b) { A.play(pad); renderGrid(); } })['catch'](function () {});
+    renderGrid();
+  };
+  // Widget touché pendant que l'appli était fermée : la commande attend le démarrage.
+  function widgetPending() {
+    var N = window.BoucanNative, s, o;
+    if (!N || !N.widgetPending) return;
+    try { s = N.widgetPending(); o = s ? JSON.parse(s) : null; } catch (e) { o = null; }
+    if (!o) return;
+    if (o.pad) B.widgetTap(o.pad);
+    else if (o.cmd) B.deckCmd(o.cmd, 0);
+  }
+
   // ====================== Démarrage ======================
   function fatal(msg) { el.busyTxt.textContent = msg; el.busy.style.display = 'flex'; }
 
@@ -2365,7 +2438,13 @@
       B.deck.load();
       setInterval(playerPoll, 1000);
       setInterval(bpmTick, 50);
+      // toute modification enregistrée met aussi à jour le widget grille
+      var save0 = B.save, saveNow0 = B.saveNow;
+      B.save = function () { save0(); widgetPush(); };
+      B.saveNow = function () { widgetPush(); return saveNow0(); };
+      widgetPush();
       on(document, 'visibilitychange', function () { playerPoll(); if (!document.hidden) B.deck.pump(); });
+      setTimeout(widgetPending, 300);
       return loadBuffers();
     })['catch'](function (e) {
       fatal(t('bootFail') + (e && e.message || e));
